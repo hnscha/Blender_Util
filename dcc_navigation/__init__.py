@@ -406,6 +406,24 @@ def _draw_mode_ui(layout, prefs):
     col.active = prefs.show_axis_overlay
     col.prop(prefs, "scale_sensitivity", slider=True, translate=False)
 
+    # 피봇 고르기 (Blender 피봇 설정을 그대로 바꾼다. 누르면 바로 적용).
+    ts = bpy.context.scene.tool_settings if bpy.context.scene else None
+    if ts is not None:
+        layout.separator()
+        layout.label(text="Pivot", translate=False)
+        col = layout.column(align=True)
+        row = col.row(align=True)
+        row.prop_enum(ts, "transform_pivot_point", 'MEDIAN_POINT', text="Shared Center", translate=False)
+        row.prop_enum(ts, "transform_pivot_point", 'INDIVIDUAL_ORIGINS', text="Individual", translate=False)
+        row = col.row(align=True)
+        row.prop_enum(ts, "transform_pivot_point", 'ACTIVE_ELEMENT', text="Active", translate=False)
+        row.prop_enum(ts, "transform_pivot_point", 'BOUNDING_BOX_CENTER', text="Bounds", translate=False)
+        row.prop_enum(ts, "transform_pivot_point", 'CURSOR', text="3D Cursor", translate=False)
+        if ts.transform_pivot_point == 'INDIVIDUAL_ORIGINS':
+            col.label(text="Each bone/object turns in place", translate=False)
+        else:
+            col.label(text="All turn around one center", translate=False)
+
 
 class DCCNAV_OT_apply_mode(bpy.types.Operator):
     """Apply the selected Viewport Navigation and Work Mode"""
