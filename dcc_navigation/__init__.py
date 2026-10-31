@@ -374,6 +374,34 @@ def _update_gizmo_pref(_self, _context):
     _sync_tool_gizmos()
 
 
+def _redraw_view3d():
+    wm = bpy.context.window_manager
+    for win in wm.windows:
+        for area in win.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+
+
+def _update_gizmo_size(_self, _context):
+    _redraw_view3d()
+
+
+class DCCNAV_OT_gizmo_size(bpy.types.Operator):
+    """Make the DCC gizmo smaller or bigger"""
+    bl_idname = "dccnav.gizmo_size"
+    bl_label = "DCC Gizmo Size"
+    bl_options = {'INTERNAL'}
+
+    delta: bpy.props.IntProperty(default=10, options={'SKIP_SAVE'})
+
+    def execute(self, _context):
+        prefs = _prefs()
+        if prefs is None:
+            return {'CANCELLED'}
+        prefs.axis_overlay_size = max(20, min(400, prefs.axis_overlay_size + self.delta))
+        return {'FINISHED'}
+
+
 _MODE_LABELS = {ident: label for ident, label, _desc in _MODE_ITEMS}
 _WORK_LABELS = {'ANIMATION': "Animation", 'RIGGING': "Rigging"}
 
@@ -436,6 +464,11 @@ def _draw_mode_ui(layout, prefs):
     layout.prop(prefs, "show_axis_overlay", translate=False)
     col = layout.column()
     col.active = prefs.show_axis_overlay
+    # 기즈모 크기: 슬라이더 + 한 단계씩 줄이기/키우기 버튼. 바꾸면 바로 보이고 설정에 저장된다.
+    row = col.row(align=True)
+    row.operator("dccnav.gizmo_size", text="", icon='REMOVE', translate=False).delta = -10
+    row.prop(prefs, "axis_overlay_size", text="Gizmo Size", slider=True, translate=False)
+    row.operator("dccnav.gizmo_size", text="", icon='ADD', translate=False).delta = 10
     col.prop(prefs, "scale_sensitivity", slider=True, translate=False)
 
     # 피봇 고르기 (Blender 피봇 설정을 그대로 바꾼다. 누르면 바로 적용).
@@ -528,9 +561,11 @@ class DCCNavigationPreferences(bpy.types.AddonPreferences):
     )
     axis_overlay_size: bpy.props.IntProperty(
         name="Gizmo Size (px)",
+        description="Size of the DCC gizmo on screen, in pixels",
         default=80,
         min=20,
         max=400,
+        update=_update_gizmo_size,
     )
     work_mode: bpy.props.EnumProperty(
         name="Work Mode",
@@ -571,10 +606,6 @@ class DCCNavigationPreferences(bpy.types.AddonPreferences):
             box.alert = True
             box.label(text="Emulate 3 Button Mouse is on and conflicts with Alt+Left drag.", icon='ERROR', translate=False)
             box.prop(inputs, "use_mouse_emulate_3_button", translate=False)
-
-        row = layout.row()
-        row.active = self.show_axis_overlay
-        row.prop(self, "axis_overlay_size", translate=False)
 
         box = layout.box()
         box.label(text="Blender Navigation Options (optional)", translate=False)
@@ -2195,6 +2226,7 @@ def _restore_tool_gizmos():
 _classes = (
     DCCNavigationPreferences,
     DCCNAV_OT_apply_mode,
+    DCCNAV_OT_gizmo_size,
     VIEW3D_PT_dcc_navigation,
     DCCNAV_OT_gizmo_transform,
     DCCNAV_OT_mmb_manipulate,
