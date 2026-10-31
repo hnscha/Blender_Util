@@ -124,10 +124,18 @@ _last_seen = []
 
 _HOTKEY_COMBOS = {(key, False, False) for key, _ in _TOOL_KEYS} | {(key, False, False) for key, _ in _ORIENT_KEYS}
 
+# 애드온 키는 없지만 그 모드에서 꺼 둘 Blender 기본 키 (키, alt, ctrl).
+# Maya/Max 사용자는 Alt 를 누른 채 뷰를 다루다 휠을 굴리는 일이 잦아서, Alt + 휠 = 프레임 이동을 끈다.
+_MODE_EXTRA_OFF = {
+    'BLENDER': set(),
+    'MAYA': {("WHEELUPMOUSE", True, False), ("WHEELDOWNMOUSE", True, False)},
+    'MAX': {("WHEELUPMOUSE", True, False), ("WHEELDOWNMOUSE", True, False)},
+}
+
 
 def _mode_combos(mode, hotkeys):
     """지금 쓰는 (키, alt, ctrl) 조합. shift/oskey 는 쓰지 않는다."""
-    combos = {(mouse, alt, ctrl) for _, mouse, alt, ctrl in _MODES[mode]}
+    combos = {(mouse, alt, ctrl) for _, mouse, alt, ctrl in _MODES[mode]} | _MODE_EXTRA_OFF[mode]
     if hotkeys:
         combos |= _HOTKEY_COMBOS
     return combos
