@@ -57,11 +57,13 @@ _ORIENT_KEYS = (
 # 모드는 뷰포트 마우스 조작만 바꾼다. 단축키(QWER, 1/2)는 모드와 따로 켜고 끈다.
 _MODES = {
     'BLENDER': (),
-    # Maya / Unreal / Unity 공통 (Maya 기준): 뷰 조작은 모두 Alt + 마우스. 가운데 버튼만 끄는 건 뷰를 움직이지 않는다.
+    # Maya / Unreal / Unity 공통 (Maya 기준): 뷰 조작은 모두 Alt + 마우스.
+    # 가운데 버튼만 끌기 = Maya 처럼 마지막으로 클릭한 기즈모 핸들(활성 핸들)을 화면 어디서나 조작.
     'MAYA': (
         ("view3d.rotate", "LEFTMOUSE", True, False),
         ("view3d.move", "MIDDLEMOUSE", True, False),
         ("view3d.zoom", "RIGHTMOUSE", True, False),
+        ("dccnav.mmb_manipulate", "MIDDLEMOUSE", False, False),
     ),
     'MAX': (
         ("view3d.move", "MIDDLEMOUSE", False, False),
@@ -86,6 +88,7 @@ _MODE_HELP = {
         "Alt + LMB : Orbit",
         "Alt + MMB : Pan",
         "Alt + RMB / Wheel : Zoom",
+        "MMB : Drag active gizmo handle",
     ),
     'MAX': (
         "MMB : Pan",
@@ -129,8 +132,7 @@ _HOTKEY_COMBOS = {(key, False, False) for key, _ in _TOOL_KEYS} | {(key, False, 
 # Maya/Max 사용자는 Alt 를 누른 채 뷰를 다루다 휠을 굴리는 일이 잦아서, Alt + 휠 = 프레임 이동을 끈다.
 _MODE_EXTRA_OFF = {
     'BLENDER': set(),
-    # Maya 모드: 가운데 버튼만 끌면 Blender 기본 회전이 되지 않게 끈다 (Maya 처럼 Alt 없이 가운데 끌기로 뷰가 안 움직임).
-    'MAYA': {("WHEELUPMOUSE", True, False), ("WHEELDOWNMOUSE", True, False), ("MIDDLEMOUSE", False, False)},
+    'MAYA': {("WHEELUPMOUSE", True, False), ("WHEELDOWNMOUSE", True, False)},
     'MAX': {("WHEELUPMOUSE", True, False), ("WHEELDOWNMOUSE", True, False)},
 }
 
@@ -646,6 +648,8 @@ _state = {
     "angle": None, "scale": None,
     # 애드온 자체 변환(DCCNAV_OT_gizmo_transform) 진행 상황. 그 밖에는 None.
     "op": None,
+    # Maya 활성 핸들: 종류별로 마지막으로 잡은 부분. 처음엔 가운데(이동 화면 평면 / 자유 회전 / 전체 스케일).
+    "active": {'MOVE': 3, 'ROTATE': 4, 'SCALE': 3},
 }
 _text_handle = None
 # 우리가 Blender 툴 기즈모를 숨긴 SpaceView3D 들 (as_pointer).
@@ -1007,6 +1011,9 @@ def _draw_gizmo():
         return [p for s in range(len(pts)) for p in (pts[s], pts[(s + 1) % len(pts)])]
 
     hot = _state["drag"] if _state["running"] is not None else _state["hover"]
+    if hot is None and _current_mode() == 'MAYA':
+        # Maya 처럼 활성 핸들(가운데 버튼으로 조작할 부분)을 노랗게 표시한다.
+        hot = _state["active"].get(kind)
 
     # Maya/Max 처럼 스케일 중에는 핸들이 배율만큼 늘었다 줄었다 하고, 바뀌는 축이 강조된다.
     own = _state["op"]
@@ -1312,6 +1319,7 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
     # 0~2 = X/Y/Z 축. 그 밖은 핸들: H_CENTER(이동=화면 평면, 스케일=전체), H_VIEW_RING(회전 바깥 링),
     # H_TRACKBALL(회전 링 안쪽 = 자유 회전), H_PLANE+i(이동 평면 핸들, i 축이 법선).
     axis: bpy.props.IntProperty(min=0, max=6, options={'SKIP_SAVE'})
+    from_mmb: bpy.props.BoolProperty(options={'SKIP_SAVE', 'HIDDEN'})
 
     @classmethod
     def poll(cls, context):
@@ -1666,13 +1674,17 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
         rv3d = context.region_data
         # 기즈모는 누른 순간(PRESS) 시작된다. Blender 가 고른 부분과 우리 판정이 어긋나는 일이 없도록
         # 누른 위치를 같은 판정(_move_pick / _rotate_pick / _scale_pick)으로 다시 확인해서 그 부분을 쓴다.
-        if self.kind in _PICKERS:
+        # 가운데 버튼 조작(Maya)으로 불렸으면 활성 핸들을 그대로 쓴다 (마우스가 기즈모 위가 아니어도 된다).
+        self.button = 'MIDDLEMOUSE' if self.from_mmb else 'LEFTMOUSE'
+        if self.kind in _PICKERS and not self.from_mmb:
             part = _PICKERS[self.kind](context, (event.mouse_region_x, event.mouse_region_y))
             _debug_invoke.clear()
             _debug_invoke.update({"given_axis": self.axis, "pick": part,
                                   "mouse": (event.mouse_region_x, event.mouse_region_y)})
             if part is not None:
                 self.axis = part
+            # Maya 처럼 마지막으로 잡은 핸들을 활성 핸들로 기억한다 (가운데 버튼 조작에 쓴다).
+            _state["active"][self.kind] = self.axis
         view_x = rv3d.view_rotation @ Vector((1.0, 0.0, 0.0))
         view_y = rv3d.view_rotation @ Vector((0.0, 1.0, 0.0))
         toward = rv3d.view_rotation @ Vector((0.0, 0.0, 1.0))
@@ -1782,7 +1794,7 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
             self._header(context)
             context.area.tag_redraw()
             return {'RUNNING_MODAL'}
-        if event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
+        if event.type == self.button and event.value == 'RELEASE':
             self._finish(context)
             self._autokey(context)
             return {'FINISHED'}
@@ -1985,6 +1997,26 @@ _PART_GIZMOS = {kind: tuple(_make_part_gizmo(kind, p) for p in range(count))
                 for kind, count in _PART_COUNTS.items()}
 
 
+class DCCNAV_OT_mmb_manipulate(bpy.types.Operator):
+    """Maya: drag with the middle mouse button anywhere to move/rotate/scale with the active gizmo handle"""
+    bl_idname = "dccnav.mmb_manipulate"
+    bl_label = "DCC Middle-Mouse Manipulate"
+    bl_options = {'INTERNAL'}
+
+    @classmethod
+    def poll(cls, context):
+        # 커스텀 기즈모가 보이는 곳(애니메이션·오브젝트/포즈·이동/회전/스케일 툴)에서만. 아니면 아무 동작 안 함.
+        return (context.region_data is not None and _custom_gizmo_here(context)
+                and _active_tool_kind(context) is not None and _own_transform_on())
+
+    def invoke(self, context, _event):
+        kind = _active_tool_kind(context)
+        axis = _state["active"].get(kind, 3)
+        res = bpy.ops.dccnav.gizmo_transform('INVOKE_DEFAULT', kind=kind, axis=axis, from_mmb=True)
+        # 실제 변환은 gizmo_transform 이 모달로 이어 간다. 이 연산자는 시작만 하고 끝낸다.
+        return {'FINISHED'} if res & {'RUNNING_MODAL', 'FINISHED'} else {'PASS_THROUGH'}
+
+
 class VIEW3D_GGT_dcc_navigation(bpy.types.GizmoGroup):
     """
     마우스로 잡는 부분만 맡는 투명 기즈모. 위치·축·크기는 _gizmo_frame 과 같아서
@@ -2165,6 +2197,7 @@ _classes = (
     DCCNAV_OT_apply_mode,
     VIEW3D_PT_dcc_navigation,
     DCCNAV_OT_gizmo_transform,
+    DCCNAV_OT_mmb_manipulate,
     *_PART_GIZMOS['MOVE'],
     *_PART_GIZMOS['ROTATE'],
     *_PART_GIZMOS['SCALE'],
