@@ -26,7 +26,7 @@ import bmesh
 import bpy
 import gpu
 from gpu_extras.batch import batch_for_shader
-from mathutils import Matrix, Vector
+from mathutils import Matrix, Quaternion, Vector
 from bpy_extras import view3d_utils
 
 # QWER 툴 전환을 넣을 모드별 키맵. Edit 모드는 편집 대상별 키맵(Mesh, Curve, Armature ...)이다.
@@ -450,6 +450,8 @@ _state = {
     "hover": None, "drag": None, "running": None,
     "start_q": None, "start_m3": None, "start_rot": None,
     "angle": None, "scale": None,
+    # 애드온 자체 변환(DCCNAV_OT_gizmo_transform) 진행 상황. 그 밖에는 None.
+    "op": None,
 }
 _text_handle = None
 # 우리가 Blender 툴 기즈모를 숨긴 SpaceView3D 들 (as_pointer).
@@ -475,6 +477,11 @@ def _active_tool_kind(context):
 
 def _op_kind(op):
     idname = op.bl_idname
+    if idname in {"DCCNAV_OT_gizmo_transform", "dccnav.gizmo_transform"}:
+        try:
+            return op.properties.kind
+        except (AttributeError, ReferenceError):
+            return 'MOVE'
     if idname.startswith("TRANSFORM_OT_"):
         name = idname[len("TRANSFORM_OT_"):]
     elif idname.startswith("transform."):
@@ -668,7 +675,8 @@ def _current_kind(context):
         if _state["running"] is None:
             # 변환이 막 시작됐다: 그때 마우스가 올라가 있던 축을 잡은 축으로 기억하고,
             # 회전량(Maya/Max 의 각도 부채꼴·숫자) 계산 기준을 잡아 둔다.
-            _state["drag"] = _state["hover"]
+            if _state["drag"] is None:
+                _state["drag"] = _state["hover"]
             _state["start_q"] = _active_quat(context)
             _state["start_m3"] = _active_matrix3(context)
             _state["start_rot"] = _orientation_matrix(context)
@@ -754,7 +762,13 @@ def _draw_gizmo():
     hot = _state["drag"] if _state["running"] is not None else _state["hover"]
 
     # Maya/Max 처럼 스케일 중에는 핸들이 배율만큼 늘었다 줄었다 하고, 바뀌는 축이 강조된다.
-    factors = _scale_factors(context) if _state["running"] == 'SCALE' else None
+    own = _state["op"]
+    if _state["running"] != 'SCALE':
+        factors = None
+    elif own is not None and own["kind"] == 'SCALE':
+        factors = own["factors"]
+    else:
+        factors = _scale_factors(context)
     _state["scale"] = (factors, center.copy()) if factors is not None else None
 
     # 기본 기즈모와 같은 모양: 이동 = 화살표, 회전 = 축별 링, 스케일 = 끝이 네모인 축.
@@ -796,15 +810,24 @@ def _draw_gizmo():
         lines(loop(circle(center, view_x, view_y, length * 1.2)), (1.0, 1.0, 1.0, 0.6))
 
         # Maya/Max 처럼 돌린 만큼을 부채꼴로 채워 보여 준다 (시작 위치 기준).
-        progress = _rotation_progress(context, hot) if _state["running"] == 'ROTATE' else None
+        r0 = None
+        if _state["running"] != 'ROTATE':
+            progress = None
+        elif own is not None and own["kind"] == 'ROTATE':
+            # 애드온 자체 회전: 각도와 잡은 지점(부채꼴 시작)을 연산자가 알려 준다.
+            progress = (own["axis"], own["axis_vec"], own["value"])
+            r0 = own["r0"]
+        else:
+            progress = _rotation_progress(context, hot)
         _state["angle"] = None
         if progress is not None:
             i, a, theta = progress
             _state["angle"] = (i, math.degrees(theta), center.copy())
-            r0 = view_y - a * view_y.dot(a)
-            if r0.length < 1e-6:
-                r0 = a.orthogonal()
-            r0.normalize()
+            if r0 is None:
+                r0 = view_y - a * view_y.dot(a)
+                if r0.length < 1e-6:
+                    r0 = a.orthogonal()
+            r0 = r0.normalized()
             b = a.cross(r0)
             steps = max(2, int(abs(theta) / (2.0 * math.pi) * 64))
             arc = [center + (r0 * math.cos(theta * s / steps) + b * math.sin(theta * s / steps)) * length
@@ -851,6 +874,401 @@ def _draw_angle_text():
     blf.draw(font, text)
 
 
+# -----------------------------------------------------------------------------
+# 애드온 자체 변환 (기즈모로 잡았을 때)
+#
+# Blender 변환(transform.*)은 축 고정선(끝없이 뻗는 축 선)을 항상 그리고 끌 방법이 없다.
+# Maya/Max 모드에서는 기즈모를 잡으면 이 연산자가 직접 이동/회전/스케일을 계산해서 그 선이 나오지 않는다.
+# G/R/S 키 변환은 그대로 Blender 변환을 쓴다.
+
+def _own_transform_on():
+    return _current_mode() in {'MAYA', 'MAX'}
+
+
+def _closest_axis_param(center, a, origin, direction):
+    """마우스 광선(origin + s*direction)에 가장 가까운 축 위 점의 파라미터 t (center + t*a). 평행하면 None."""
+    w0 = center - origin
+    b = a.dot(direction)
+    c = direction.dot(direction)
+    d = a.dot(w0)
+    e = direction.dot(w0)
+    denom = c - b * b
+    if abs(denom) < 1e-8:
+        return None
+    return (b * e - c * d) / denom
+
+
+def _ray_plane_hit(origin, direction, point, normal):
+    denom = direction.dot(normal)
+    if abs(denom) < 1e-8:
+        return None
+    s = (point - origin).dot(normal) / denom
+    return origin + direction * s
+
+
+def _rot_mode_path(rotation_mode):
+    if rotation_mode == 'QUATERNION':
+        return "rotation_quaternion"
+    if rotation_mode == 'AXIS_ANGLE':
+        return "rotation_axis_angle"
+    return "rotation_euler"
+
+
+def _apply_basis(owner, basis, start, prev_rot):
+    """
+    분해한 basis 행렬을 loc/rot/scale 채널에 넣는다. 잠긴 채널은 시작값을 유지하고,
+    오일러는 직전 값과 연속이 되게(180° 넘어도 튀지 않게) 넣는다. 넣은 회전값을 돌려준다.
+    """
+    loc, quat, scale = basis.decompose()
+    start_loc, start_rot, start_scale = start
+    owner.location = [start_loc[i] if owner.lock_location[i] else loc[i] for i in range(3)]
+    owner.scale = [start_scale[i] if owner.lock_scale[i] else scale[i] for i in range(3)]
+    mode = owner.rotation_mode
+    if mode == 'QUATERNION':
+        if quat.dot(prev_rot) < 0.0:
+            quat.negate()
+        owner.rotation_quaternion = quat
+        return quat.copy()
+    if mode == 'AXIS_ANGLE':
+        axis, angle = quat.to_axis_angle()
+        owner.rotation_axis_angle = (angle, axis.x, axis.y, axis.z)
+        return quat.copy()
+    eul = quat.to_euler(mode, prev_rot)
+    owner.rotation_euler = [start_rot[i] if owner.lock_rotation[i] else eul[i] for i in range(3)]
+    return owner.rotation_euler.copy()
+
+
+def _rot_value(owner):
+    mode = owner.rotation_mode
+    if mode == 'QUATERNION':
+        return owner.rotation_quaternion.copy()
+    if mode == 'AXIS_ANGLE':
+        angle, x, y, z = owner.rotation_axis_angle
+        return Quaternion((x, y, z), angle)
+    return owner.rotation_euler.copy()
+
+
+class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
+    """DCC 기즈모로 잡은 축을 따라 이동/회전/스케일 (축 고정선 없이)"""
+    bl_idname = "dccnav.gizmo_transform"
+    bl_label = "DCC 기즈모 변환"
+    bl_options = {'REGISTER', 'UNDO', 'BLOCKING'}
+
+    kind: bpy.props.EnumProperty(
+        items=(('MOVE', "이동", ""), ('ROTATE', "회전", ""), ('SCALE', "스케일", "")),
+        options={'SKIP_SAVE'},
+    )
+    axis: bpy.props.IntProperty(min=0, max=2, options={'SKIP_SAVE'})
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode in _GIZMO_MODES and context.region_data is not None
+
+    # --- 대상 수집 ---------------------------------------------------------
+
+    def _collect(self, context):
+        mode = context.mode
+        self.objects = []
+        self.bones = []
+        self.verts = None
+        self.ebones = None
+        if mode == 'OBJECT':
+            sel = set(context.selected_objects)
+
+            def has_selected_parent(o):
+                p = o.parent
+                while p is not None:
+                    if p in sel:
+                        return True
+                    p = p.parent
+                return False
+
+            for o in context.selected_objects:
+                if not has_selected_parent(o):
+                    self.objects.append({
+                        "obj": o,
+                        "world": o.matrix_world.copy(),
+                        "start": (o.location.copy(), _rot_value(o), o.scale.copy()),
+                        "prev": _rot_value(o),
+                    })
+        elif mode == 'POSE':
+            sel = set(context.selected_pose_bones or [])
+
+            def has_selected_parent(pb):
+                p = pb.parent
+                while p is not None:
+                    if p in sel:
+                        return True
+                    p = p.parent
+                return False
+
+            for pb in sel:
+                if not has_selected_parent(pb):
+                    arm = pb.id_data
+                    self.bones.append({
+                        "pb": pb,
+                        "arm": arm,
+                        "world": arm.matrix_world @ pb.matrix,
+                        "start": (pb.location.copy(), _rot_value(pb), pb.scale.copy()),
+                        "prev": _rot_value(pb),
+                    })
+        elif mode == 'EDIT_MESH':
+            obj = context.active_object
+            bm = bmesh.from_edit_mesh(obj.data)
+            mw = obj.matrix_world
+            self.verts = {
+                "obj": obj, "bm": bm, "mw": mw.copy(), "imw": mw.inverted(),
+                "items": [(v, mw @ v.co) for v in bm.verts if v.select],
+            }
+        elif mode == 'EDIT_ARMATURE':
+            obj = context.active_object
+            mw = obj.matrix_world
+            items = []
+            for eb in obj.data.edit_bones:
+                if eb.select_head or eb.select_tail:
+                    items.append((eb, eb.select_head, eb.select_tail, mw @ eb.head, mw @ eb.tail, eb.roll))
+            self.ebones = {"obj": obj, "mw": mw.copy(), "imw": mw.inverted(), "items": items}
+
+    def _has_targets(self):
+        return bool(self.objects or self.bones or (self.verts and self.verts["items"])
+                    or (self.ebones and self.ebones["items"]))
+
+    # --- 적용 ---------------------------------------------------------------
+
+    def _apply(self, context, delta):
+        for item in self.objects:
+            o = item["obj"]
+            o.matrix_world = delta @ item["world"]
+            item["prev"] = _apply_basis(o, o.matrix_basis.copy(), item["start"], item["prev"])
+        for item in self.bones:
+            pb = item["pb"]
+            arm = item["arm"]
+            pose_m = arm.matrix_world.inverted() @ delta @ item["world"]
+            basis = arm.convert_space(pose_bone=pb, matrix=pose_m, from_space='POSE', to_space='LOCAL')
+            item["prev"] = _apply_basis(pb, basis, item["start"], item["prev"])
+        if self.verts is not None:
+            m = self.verts["imw"] @ delta
+            for v, co in self.verts["items"]:
+                v.co = m @ co
+            bmesh.update_edit_mesh(self.verts["obj"].data, loop_triangles=False, destructive=False)
+        if self.ebones is not None:
+            imw = self.ebones["imw"]
+            for eb, sh, st, head, tail, roll in self.ebones["items"]:
+                if sh:
+                    eb.head = imw @ (delta @ head)
+                else:
+                    eb.head = imw @ head
+                if st:
+                    eb.tail = imw @ (delta @ tail)
+                else:
+                    eb.tail = imw @ tail
+                eb.roll = roll
+        context.view_layer.update()
+
+    def _restore(self, context):
+        self._apply(context, Matrix.Identity(4))
+        for item in self.objects:
+            o = item["obj"]
+            loc, rot, scale = item["start"]
+            o.location, o.scale = loc, scale
+            self._set_rot(o, rot)
+        for item in self.bones:
+            pb = item["pb"]
+            loc, rot, scale = item["start"]
+            pb.location, pb.scale = loc, scale
+            self._set_rot(pb, rot)
+        context.view_layer.update()
+
+    @staticmethod
+    def _set_rot(owner, rot):
+        mode = owner.rotation_mode
+        if mode == 'QUATERNION':
+            owner.rotation_quaternion = rot
+        elif mode == 'AXIS_ANGLE':
+            axis, angle = rot.to_axis_angle()
+            owner.rotation_axis_angle = (angle, axis.x, axis.y, axis.z)
+        else:
+            owner.rotation_euler = rot
+
+    def _autokey(self, context):
+        if not context.scene.tool_settings.use_keyframe_insert_auto:
+            return
+        frame = context.scene.frame_current
+        if self.kind == 'MOVE':
+            paths = lambda owner: ["location"]
+        elif self.kind == 'ROTATE':
+            paths = lambda owner: [_rot_mode_path(owner.rotation_mode)]
+        else:
+            paths = lambda owner: ["scale"]
+        for item in self.objects:
+            for p in paths(item["obj"]):
+                item["obj"].keyframe_insert(p, frame=frame)
+        for item in self.bones:
+            pb = item["pb"]
+            for p in paths(pb):
+                pb.keyframe_insert(p, frame=frame, group=pb.name)
+
+    # --- 마우스 → 변환 -----------------------------------------------------
+
+    def _ray(self, context, mouse):
+        region = context.region
+        rv3d = context.region_data
+        origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, mouse)
+        direction = view3d_utils.region_2d_to_vector_3d(region, rv3d, mouse)
+        return origin, direction
+
+    def _value(self, context, event):
+        mouse = Vector((event.mouse_region_x, event.mouse_region_y))
+        precise = event.shift
+        snap = event.ctrl
+        if self.kind == 'MOVE':
+            o, d = self._ray(context, mouse)
+            t = _closest_axis_param(self.center, self.a, o, d)
+            if t is None:
+                return self.value
+            value = t - self.t0
+            if precise:
+                value *= 0.1
+            if snap:
+                step = context.scene.unit_settings.scale_length or 1.0
+                value = round(value / (0.1 * step)) * (0.1 * step)
+            return value
+        if self.kind == 'ROTATE':
+            v = mouse - self.c2d
+            if v.length < 1.0 or self.last_vec.length < 1.0:
+                return self.value
+            ang = math.atan2(self.last_vec.x * v.y - self.last_vec.y * v.x, self.last_vec.dot(v))
+            self.last_vec = v
+            self.raw += ang * (0.1 if precise else 1.0)
+            value = self.raw * self.view_sign
+            if snap:
+                step = math.radians(5.0)
+                value = round(value / step) * step
+            return value
+        # SCALE
+        proj = (mouse - self.c2d).dot(self.s2d)
+        if abs(self.d0) < 1e-6:
+            return self.value
+        factor = proj / self.d0
+        if precise:
+            factor = 1.0 + (factor - 1.0) * 0.1
+        if snap:
+            factor = round(factor / 0.1) * 0.1
+        return factor
+
+    def _delta(self):
+        c, a = self.center, self.a
+        if self.kind == 'MOVE':
+            return Matrix.Translation(a * self.value)
+        if self.kind == 'ROTATE':
+            return Matrix.Translation(c) @ Matrix.Rotation(self.value, 4, a) @ Matrix.Translation(-c)
+        f = self.value
+        s3 = Matrix.Identity(3)
+        for r in range(3):
+            for col in range(3):
+                s3[r][col] += (f - 1.0) * a[r] * a[col]
+        return Matrix.Translation(c) @ s3.to_4x4() @ Matrix.Translation(-c)
+
+    def _publish(self):
+        factors = [1.0, 1.0, 1.0]
+        if self.kind == 'SCALE':
+            factors[self.axis] = self.value
+        _state["op"] = {
+            "kind": self.kind,
+            "axis": self.axis,
+            "axis_vec": self.a.copy(),
+            "value": self.value,
+            "r0": self.r0,
+            "factors": tuple(factors),
+        }
+
+    def _header(self, context):
+        name = "XYZ"[self.axis]
+        if self.kind == 'MOVE':
+            text = "이동 {:s}: {:.4f}".format(name, self.value)
+        elif self.kind == 'ROTATE':
+            text = "회전 {:s}: {:+.2f}°".format(name, math.degrees(self.value))
+        else:
+            text = "스케일 {:s}: ×{:.3f}".format(name, self.value)
+        text += "    Ctrl: 스냅   Shift: 정밀   우클릭/Esc: 취소"
+        context.area.header_text_set(text)
+
+    # --- 연산자 ---------------------------------------------------------------
+
+    def invoke(self, context, event):
+        self._collect(context)
+        if not self._has_targets():
+            return {'CANCELLED'}
+        center = _selection_center(context)
+        if center is None:
+            return {'CANCELLED'}
+        rot = _orientation_matrix(context)
+        self.center = center
+        self.a = rot.col[self.axis].normalized()
+        region = context.region
+        rv3d = context.region_data
+        mouse = Vector((event.mouse_region_x, event.mouse_region_y))
+        self.c2d = view3d_utils.location_3d_to_region_2d(region, rv3d, center) or mouse.copy()
+        self.r0 = None
+
+        if self.kind == 'MOVE':
+            o, d = self._ray(context, mouse)
+            t0 = _closest_axis_param(center, self.a, o, d)
+            if t0 is None:
+                return {'CANCELLED'}
+            self.t0 = t0
+            self.value = 0.0
+        elif self.kind == 'ROTATE':
+            self.last_vec = mouse - self.c2d
+            self.raw = 0.0
+            toward = rv3d.view_rotation @ Vector((0.0, 0.0, 1.0))
+            # 화면에서 반시계로 돌리면, 축이 보는 사람 쪽을 향할 때 + 회전이다.
+            self.view_sign = 1.0 if self.a.dot(toward) >= 0.0 else -1.0
+            o, d = self._ray(context, mouse)
+            hit = _ray_plane_hit(o, d, center, self.a)
+            if hit is not None and (hit - center).length > 1e-6:
+                self.r0 = (hit - center).normalized()
+            self.value = 0.0
+        else:
+            tip2d = view3d_utils.location_3d_to_region_2d(region, rv3d, center + self.a)
+            if tip2d is None or (tip2d - self.c2d).length < 1e-3:
+                return {'CANCELLED'}
+            self.s2d = (tip2d - self.c2d).normalized()
+            self.d0 = (mouse - self.c2d).dot(self.s2d)
+            if abs(self.d0) < 4.0:
+                self.d0 = 4.0 if self.d0 >= 0.0 else -4.0
+            self.value = 1.0
+
+        _state["drag"] = self.axis
+        self._publish()
+        self._header(context)
+        context.window_manager.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def modal(self, context, event):
+        if event.type in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE', 'LEFT_CTRL', 'RIGHT_CTRL', 'LEFT_SHIFT', 'RIGHT_SHIFT'}:
+            self.value = self._value(context, event)
+            self._apply(context, self._delta())
+            self._publish()
+            self._header(context)
+            context.area.tag_redraw()
+            return {'RUNNING_MODAL'}
+        if event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
+            self._finish(context)
+            self._autokey(context)
+            return {'FINISHED'}
+        if event.type in {'RIGHTMOUSE', 'ESC'} and event.value == 'PRESS':
+            self._restore(context)
+            self._finish(context)
+            return {'CANCELLED'}
+        return {'RUNNING_MODAL'}
+
+    def _finish(self, context):
+        _state["op"] = None
+        context.area.header_text_set(None)
+        context.area.tag_redraw()
+
+
 class VIEW3D_GGT_dcc_navigation(bpy.types.GizmoGroup):
     """
     마우스로 잡는 부분만 맡는 투명 기즈모. 위치·축·크기는 _gizmo_frame 과 같아서
@@ -886,9 +1304,15 @@ class VIEW3D_GGT_dcc_navigation(bpy.types.GizmoGroup):
             self.handles[kind] = items
         self.bound = None
 
-    def _bind(self, orient):
+    def _bind(self, orient, own):
         for kind, items in self.handles.items():
             for i, gz in enumerate(items):
+                if own:
+                    # Maya/Max 모드: 애드온이 직접 변환해서 Blender 축 고정선이 나오지 않는다.
+                    props = gz.target_set_operator("dccnav.gizmo_transform")
+                    props.kind = kind
+                    props.axis = i
+                    continue
                 axis = [False, False, False]
                 axis[i] = True
                 if kind == 'MOVE':
@@ -901,14 +1325,15 @@ class VIEW3D_GGT_dcc_navigation(bpy.types.GizmoGroup):
                 props.constraint_axis = axis
                 props.orient_type = orient
                 props.release_confirm = True
-        self.bound = orient
+        self.bound = (orient, own)
 
     def draw_prepare(self, context):
         kind = _active_tool_kind(context)
         frame = _gizmo_frame(context) if kind is not None else None
         orient = context.scene.transform_orientation_slots[0].type
-        if self.bound != orient:
-            self._bind(orient)
+        own = _own_transform_on()
+        if self.bound != (orient, own):
+            self._bind(orient, own)
 
         hover = None
         for k, items in self.handles.items():
@@ -987,6 +1412,7 @@ def _restore_tool_gizmos():
 _classes = (
     DCCNavigationPreferences,
     VIEW3D_PT_dcc_navigation,
+    DCCNAV_OT_gizmo_transform,
     VIEW3D_GGT_dcc_navigation,
 )
 
