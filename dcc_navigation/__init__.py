@@ -350,6 +350,11 @@ def _draw_mode_ui(layout, prefs):
     col = layout.column()
     col.active = prefs.show_axis_overlay
     col.prop(prefs, "scale_sensitivity", slider=True)
+    col.prop(prefs, "use_own_transform")
+    sub = col.column(align=True)
+    sub.active = prefs.use_own_transform and prefs.nav_mode != 'BLENDER'
+    sub.label(text="오브젝트·포즈 모드에서 축 고정선 없이 변환")
+    sub.label(text="에디트 모드·G/R/S 키는 Blender 변환")
 
 
 class DCCNavigationPreferences(bpy.types.AddonPreferences):
@@ -382,6 +387,14 @@ class DCCNavigationPreferences(bpy.types.AddonPreferences):
         default=80,
         min=20,
         max=400,
+    )
+    use_own_transform: bpy.props.BoolProperty(
+        name="기즈모 자체 변환 (축 고정선 없음)",
+        description=(
+            "Maya/Max 모드에서 기즈모를 잡으면 애드온이 직접 이동/회전/스케일해서 Blender 축 고정선이 나오지 않는다.\n"
+            "오브젝트·포즈 모드에만 적용. 끄면 Blender 변환(숫자 입력·스냅·비례 편집 등 지원)을 쓴다"
+        ),
+        default=True,
     )
     scale_sensitivity: bpy.props.FloatProperty(
         name="스케일 감도",
@@ -956,7 +969,14 @@ def _draw_angle_text():
 # G/R/S 키 변환은 그대로 Blender 변환을 쓴다.
 
 def _own_transform_on():
-    return _current_mode() in {'MAYA', 'MAX'}
+    """
+    기즈모 드래그를 애드온 자체 변환으로 할지. Maya/Max 모드 + 설정 켬 + 오브젝트·포즈 모드일 때만.
+    에디트 모드는 숫자 입력·정점 스냅·비례 편집·미러 같은 Blender 변환 기능이 필요해서 Blender 변환을 쓴다.
+    """
+    prefs = _prefs()
+    if prefs is None or not prefs.use_own_transform or prefs.nav_mode not in {'MAYA', 'MAX'}:
+        return False
+    return bpy.context.mode in {'OBJECT', 'POSE'}
 
 
 def _closest_axis_param(center, a, origin, direction):
