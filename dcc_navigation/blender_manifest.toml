@@ -3,7 +3,7 @@ schema_version = "1.0.0"
 id = "dcc_navigation"
 version = "1.0.0"
 name = "DCC Navigation"
-tagline = "Maya, Unreal and 3ds Max style viewport navigation and QWER tools"
+tagline = "Maya, Unreal and 3ds Max style viewport navigation"
 maintainer = "HS"
 type = "add-on"
 
