@@ -57,12 +57,11 @@ _ORIENT_KEYS = (
 # 모드는 뷰포트 마우스 조작만 바꾼다. 단축키(QWER, 1/2)는 모드와 따로 켜고 끈다.
 _MODES = {
     'BLENDER': (),
-    # Maya / Unreal / Unity 공통. 가운데 드래그만으로 이동(Pan)은 Unreal·Unity 방식이고 Maya 와도 겹치지 않는다.
+    # Maya / Unreal / Unity 공통 (Maya 기준): 뷰 조작은 모두 Alt + 마우스. 가운데 버튼만 끄는 건 뷰를 움직이지 않는다.
     'MAYA': (
         ("view3d.rotate", "LEFTMOUSE", True, False),
         ("view3d.move", "MIDDLEMOUSE", True, False),
         ("view3d.zoom", "RIGHTMOUSE", True, False),
-        ("view3d.move", "MIDDLEMOUSE", False, False),
     ),
     'MAX': (
         ("view3d.move", "MIDDLEMOUSE", False, False),
@@ -73,7 +72,7 @@ _MODES = {
 
 _MODE_ITEMS = (
     ('BLENDER', "Blender Default", "Blender's default viewport navigation"),
-    ('MAYA', "Maya / Unreal / Unity", "Alt + Left/Middle/Right drag = Orbit/Pan/Zoom, Middle drag = Pan"),
+    ('MAYA', "Maya / Unreal / Unity", "Alt + Left/Middle/Right drag = Orbit/Pan/Zoom"),
     ('MAX', "3ds Max", "Middle drag = Pan, Alt+Middle = Orbit, Ctrl+Alt+Middle = Zoom"),
 )
 
@@ -85,7 +84,7 @@ _MODE_HELP = {
     ),
     'MAYA': (
         "Alt + LMB : Orbit",
-        "Alt + MMB / MMB : Pan",
+        "Alt + MMB : Pan",
         "Alt + RMB / Wheel : Zoom",
     ),
     'MAX': (
@@ -130,7 +129,8 @@ _HOTKEY_COMBOS = {(key, False, False) for key, _ in _TOOL_KEYS} | {(key, False, 
 # Maya/Max 사용자는 Alt 를 누른 채 뷰를 다루다 휠을 굴리는 일이 잦아서, Alt + 휠 = 프레임 이동을 끈다.
 _MODE_EXTRA_OFF = {
     'BLENDER': set(),
-    'MAYA': {("WHEELUPMOUSE", True, False), ("WHEELDOWNMOUSE", True, False)},
+    # Maya 모드: 가운데 버튼만 끌면 Blender 기본 회전이 되지 않게 끈다 (Maya 처럼 Alt 없이 가운데 끌기로 뷰가 안 움직임).
+    'MAYA': {("WHEELUPMOUSE", True, False), ("WHEELDOWNMOUSE", True, False), ("MIDDLEMOUSE", False, False)},
     'MAX': {("WHEELUPMOUSE", True, False), ("WHEELDOWNMOUSE", True, False)},
 }
 
