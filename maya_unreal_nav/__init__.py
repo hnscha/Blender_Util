@@ -10,7 +10,7 @@ Maya/Unreal 식 뷰포트 조작 애드온.
 
 Object / Edit / Pose 모드, Layout / Modeling / Animating 등 모든 워크스페이스에서 같다.
 같은 키를 쓰는 Blender 기본 단축키는 활성 키맵에서 꺼 두고, 애드온을 끄면 기본값으로 되돌린다.
-이동/회전/스케일 중에는 변환 중심에 X/Y/Z 축 화살표를 그린다 (현재 좌표계 기준).
+이동/회전/스케일 중에는 Blender 가 숨기는 기즈모 대신 같은 모양의 X/Y/Z 기즈모를 그린다 (현재 좌표계 기준).
 """
 
 import math
@@ -77,8 +77,8 @@ class MayaUnrealNavPreferences(bpy.types.AddonPreferences):
     bl_idname = __package__
 
     show_axis_overlay: bpy.props.BoolProperty(
-        name="변환 중 축 표시",
-        description="이동/회전/스케일 중 변환 중심에 X/Y/Z 축 화살표를 그린다",
+        name="변환 중 기즈모 유지",
+        description="이동/회전/스케일 중에도 X/Y/Z 기즈모(화살표/링/스케일 핸들)를 계속 그린다",
         default=True,
     )
     axis_overlay_size: bpy.props.IntProperty(
@@ -239,14 +239,24 @@ _AXIS_COLORS = (
 
 
 def _transform_running(context):
+    """실행 중인 변환 종류 ('MOVE' / 'ROTATE' / 'SCALE') 를 돌려준다. 변환 중이 아니면 None."""
     win = context.window
     if win is None:
-        return False
+        return None
     for op in win.modal_operators:
         idname = op.bl_idname
-        if idname.startswith("TRANSFORM_OT_") or idname.startswith("transform."):
-            return True
-    return False
+        if idname.startswith("TRANSFORM_OT_"):
+            name = idname[len("TRANSFORM_OT_"):]
+        elif idname.startswith("transform."):
+            name = idname[len("transform."):]
+        else:
+            continue
+        if name in {"rotate", "trackball"}:
+            return 'ROTATE'
+        if name in {"resize", "shrink_fatten", "skin_resize"}:
+            return 'SCALE'
+        return 'MOVE'
+    return None
 
 
 def _selection_center(context):
@@ -315,7 +325,8 @@ def _draw_axis_overlay():
     prefs = _prefs()
     if prefs is None or not prefs.show_axis_overlay:
         return
-    if not _transform_running(context):
+    kind = _transform_running(context)
+    if kind is None:
         return
     region = context.region
     rv3d = context.region_data
@@ -342,29 +353,54 @@ def _draw_axis_overlay():
     gpu.state.depth_test_set('NONE')
     gpu.state.blend_set('ALPHA')
 
-    for i in range(3):
-        axis = rot.col[i].normalized()
-        tip = center + axis * length
-        shader.uniform_float("viewportSize", (region.width, region.height))
-        shader.uniform_float("lineWidth", 2.5)
-        shader.uniform_float("color", _AXIS_COLORS[i])
-        batch_for_shader(shader, 'LINES', {"pos": [center, tip]}).draw(shader)
+    shader.uniform_float("viewportSize", (region.width, region.height))
+    shader.uniform_float("lineWidth", 2.5)
 
-        # 화살촉: 축에 수직인 두 벡터로 원뿔을 만든다.
+    def lines(points, color):
+        shader.uniform_float("color", color)
+        batch_for_shader(shader, 'LINES', {"pos": points}).draw(shader)
+
+    def tris(points, color):
+        tri_shader.uniform_float("color", color)
+        batch_for_shader(tri_shader, 'TRIS', {"pos": points}).draw(tri_shader)
+
+    def circle(c, a, b, radius, segs=48):
+        pts = [c + (a * math.cos(s / segs * 2.0 * math.pi) + b * math.sin(s / segs * 2.0 * math.pi)) * radius
+               for s in range(segs)]
+        return pts
+
+    # 기본 기즈모와 같은 모양: 이동 = 화살표, 회전 = 축별 링, 스케일 = 끝이 네모인 축.
+    for i in range(3):
+        color = _AXIS_COLORS[i]
+        axis = rot.col[i].normalized()
         side = axis.orthogonal().normalized()
         up = axis.cross(side).normalized()
-        head_len = length * 0.18
-        head_rad = length * 0.06
-        base = tip - axis * head_len
-        ring = []
-        for s in range(12):
-            a = s / 12.0 * 2.0 * math.pi
-            ring.append(base + (side * math.cos(a) + up * math.sin(a)) * head_rad)
-        tris = []
-        for s in range(12):
-            tris += [tip, ring[s], ring[(s + 1) % 12]]
-        tri_shader.uniform_float("color", _AXIS_COLORS[i])
-        batch_for_shader(tri_shader, 'TRIS', {"pos": tris}).draw(tri_shader)
+
+        if kind == 'ROTATE':
+            ring = circle(center, side, up, length)
+            lines([p for s in range(len(ring)) for p in (ring[s], ring[(s + 1) % len(ring)])], color)
+            continue
+
+        tip = center + axis * length
+        lines([center, tip], color)
+
+        if kind == 'SCALE':
+            h = length * 0.06
+            corners = [tip + (side * sx + up * sy + axis * sz) * h
+                       for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)]
+            faces = ((0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3))
+            tris([corners[j] for f in faces for j in (f[0], f[1], f[2], f[0], f[2], f[3])], color)
+        else:
+            base = tip - axis * (length * 0.18)
+            ring = circle(base, side, up, length * 0.06, segs=12)
+            tris([p for s in range(12) for p in (tip, ring[s], ring[(s + 1) % 12])], color)
+
+    if kind == 'ROTATE':
+        # 화면 방향 바깥 링 (기본 회전 기즈모의 흰 링).
+        view_x = rv3d.view_rotation @ Vector((1.0, 0.0, 0.0))
+        view_y = rv3d.view_rotation @ Vector((0.0, 1.0, 0.0))
+        ring = circle(center, view_x, view_y, length * 1.2)
+        lines([p for s in range(len(ring)) for p in (ring[s], ring[(s + 1) % len(ring)])], (1.0, 1.0, 1.0, 0.6))
 
     gpu.state.blend_set('NONE')
 
