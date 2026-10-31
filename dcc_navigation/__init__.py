@@ -2,17 +2,20 @@
 """
 DCC Navigation — 뷰포트 조작 모드 전환 애드온 (Blender 기본 / Maya·Unreal / 3ds Max).
 
+조작 모드 (뷰포트 마우스 조작만 바뀐다)
+  Blender 기본  Blender 그대로
   Maya·Unreal  Alt + 왼쪽 / 가운데 / 오른쪽 드래그 = 회전 / 이동 / 줌
   3ds Max      가운데 드래그 = 이동, Alt + 가운데 = 회전, Ctrl + Alt + 가운데(또는 휠) = 줌
-  공통         Q / W / E / R = 선택(박스) / 이동 / 회전 / 스케일 툴
-               1 / 2 (숫자 윗줄) = 좌표계 World(Global) / Local  (넘패드는 건드리지 않음)
-  Blender 기본 애드온 키를 모두 빼고 꺼 둔 기본 단축키를 되살린다.
 
-모드는 3D 뷰포트 N 패널의 "DCC Nav" 탭이나 애드온 설정에서 바꾸고, 환경 설정에 저장되어 재시작 후에도 유지된다.
+단축키 (모드와 따로 켜고 끈다)
+  Q / W / E / R = 선택(박스) / 이동 / 회전 / 스케일 툴
+  1 / 2 (숫자 윗줄) = 좌표계 World(Global) / Local  (넘패드는 건드리지 않음)
+
+모드·단축키·기즈모는 3D 뷰포트 N 패널의 "DCC Nav" 탭이나 애드온 설정에서 바꾸고, 재시작 후에도 유지된다.
 Object / Edit / Pose 모드, Layout / Modeling / Animating 등 모든 워크스페이스에서 같다.
-선택한 모드와 같은 키를 쓰는 Blender 기본 단축키만 활성 키맵에서 꺼 두고, 모드를 바꾸거나 애드온을 끄면 되돌린다.
+지금 쓰는 키와 겹치는 Blender 기본 단축키만 활성 키맵에서 꺼 두고, 설정을 바꾸거나 애드온을 끄면 되돌린다.
 DCC 기즈모: Move / Rotate / Scale 툴의 Blender 기즈모를 숨기고, 대기 중과 변환 중에 모양이 똑같은 기즈모를 그린다.
-변환 중에도 X/Y/Z 가 모두 보이고 사라지거나 바뀌지 않는다 (현재 좌표계·피봇 기준). "Blender 기본" 모드에서는 쓰지 않는다.
+변환 중에도 X/Y/Z 가 모두 보이고 사라지거나 바뀌지 않는다 (현재 좌표계·피봇 기준).
 """
 
 import math
@@ -51,49 +54,45 @@ _ORIENT_KEYS = (
 )
 
 # 모드별 뷰 조작 키: (오퍼레이터, 마우스 버튼, alt, ctrl). 휠 줌은 Blender 기본을 그대로 쓴다.
+# 모드는 뷰포트 마우스 조작만 바꾼다. 단축키(QWER, 1/2)는 모드와 따로 켜고 끈다.
 _MODES = {
-    'BLENDER': {
-        "nav": (),
-        "tools": False,
-    },
-    'MAYA': {
-        "nav": (
-            ("view3d.rotate", "LEFTMOUSE", True, False),
-            ("view3d.move", "MIDDLEMOUSE", True, False),
-            ("view3d.zoom", "RIGHTMOUSE", True, False),
-        ),
-        "tools": True,
-    },
-    'MAX': {
-        "nav": (
-            ("view3d.move", "MIDDLEMOUSE", False, False),
-            ("view3d.rotate", "MIDDLEMOUSE", True, False),
-            ("view3d.zoom", "MIDDLEMOUSE", True, True),
-        ),
-        "tools": True,
-    },
+    'BLENDER': (),
+    'MAYA': (
+        ("view3d.rotate", "LEFTMOUSE", True, False),
+        ("view3d.move", "MIDDLEMOUSE", True, False),
+        ("view3d.zoom", "RIGHTMOUSE", True, False),
+    ),
+    'MAX': (
+        ("view3d.move", "MIDDLEMOUSE", False, False),
+        ("view3d.rotate", "MIDDLEMOUSE", True, False),
+        ("view3d.zoom", "MIDDLEMOUSE", True, True),
+    ),
 }
 
 _MODE_ITEMS = (
-    ('BLENDER', "Blender 기본", "Blender 기본 조작 (애드온 키 없음)"),
-    ('MAYA', "Maya / Unreal", "Alt + 왼쪽/가운데/오른쪽 드래그 = 회전/이동/줌, QWER, 1/2"),
-    ('MAX', "3ds Max", "가운데 드래그 = 이동, Alt+가운데 = 회전, Ctrl+Alt+가운데 = 줌, QWER, 1/2"),
+    ('BLENDER', "Blender 기본", "Blender 기본 뷰포트 조작"),
+    ('MAYA', "Maya / Unreal", "Alt + 왼쪽/가운데/오른쪽 드래그 = 회전/이동/줌"),
+    ('MAX', "3ds Max", "가운데 드래그 = 이동, Alt+가운데 = 회전, Ctrl+Alt+가운데 = 줌"),
 )
 
 _MODE_HELP = {
-    'BLENDER': ("Blender 기본 조작",),
+    'BLENDER': (
+        "가운데 드래그 : 회전,  Shift + 가운데 : 이동",
+        "Ctrl + 가운데 또는 휠 : 줌",
+    ),
     'MAYA': (
         "Alt + 왼쪽 / 가운데 / 오른쪽 드래그 : 회전 / 이동 / 줌",
-        "Q / W / E / R : 선택 / 이동 / 회전 / 스케일",
-        "1 / 2 : 좌표계 World / Local",
     ),
     'MAX': (
         "가운데 드래그 : 이동,  Alt + 가운데 : 회전",
         "Ctrl + Alt + 가운데 또는 휠 : 줌",
-        "Q / W / E / R : 선택 / 이동 / 회전 / 스케일",
-        "1 / 2 : 좌표계 World / Local",
     ),
 }
+
+_HOTKEY_HELP = (
+    "Q / W / E / R : 선택 / 이동 / 회전 / 스케일",
+    "1 / 2 : 좌표계 World / Local",
+)
 
 # 3D 뷰포트에서 이 애드온 키보다 먼저/같이 처리될 수 있는 키맵. 여기서 같은 키를 쓰는 기본 항목을 끈다.
 _CONFLICT_KEYMAPS = (
@@ -117,17 +116,22 @@ _last_seen = []
 # -----------------------------------------------------------------------------
 # 키 조합
 
-def _mode_combos(mode):
-    """모드가 쓰는 (키, alt, ctrl) 조합. shift/oskey 는 쓰지 않는다."""
-    spec = _MODES[mode]
-    combos = {(mouse, alt, ctrl) for _, mouse, alt, ctrl in spec["nav"]}
-    if spec["tools"]:
-        combos |= {(key, False, False) for key, _ in _TOOL_KEYS}
-        combos |= {(key, False, False) for key, _ in _ORIENT_KEYS}
+_HOTKEY_COMBOS = {(key, False, False) for key, _ in _TOOL_KEYS} | {(key, False, False) for key, _ in _ORIENT_KEYS}
+
+
+def _mode_combos(mode, hotkeys):
+    """지금 쓰는 (키, alt, ctrl) 조합. shift/oskey 는 쓰지 않는다."""
+    combos = {(mouse, alt, ctrl) for _, mouse, alt, ctrl in _MODES[mode]}
+    if hotkeys:
+        combos |= _HOTKEY_COMBOS
     return combos
 
 
-_ALL_COMBOS = set().union(*(_mode_combos(m) for m in _MODES))
+def _active_combos():
+    return _mode_combos(_current_mode(), _hotkeys_on())
+
+
+_ALL_COMBOS = set().union(*(_mode_combos(m, True) for m in _MODES))
 
 
 def _item_prop(kmi):
@@ -156,12 +160,12 @@ def _key_text(kmi):
 # -----------------------------------------------------------------------------
 # 키맵
 
-def _register_keymaps(mode):
+def _register_keymaps(mode, hotkeys):
     kc = bpy.context.window_manager.keyconfigs.addon
     if kc is None:
         # 백그라운드 모드에는 애드온 키컨피그가 없다.
         return
-    spec = _MODES[mode]
+    nav = _MODES[mode]
 
     def add(km, idname, key, **kw):
         props = kw.pop("props", {})
@@ -171,15 +175,15 @@ def _register_keymaps(mode):
         _addon_keymaps.append((km, kmi))
         _own_sigs.add(_sig(km.name, kmi))
 
-    if spec["nav"] or spec["tools"]:
+    if nav or hotkeys:
         km = kc.keymaps.new(name="3D View", space_type='VIEW_3D')
-        for idname, mouse, alt, ctrl in spec["nav"]:
+        for idname, mouse, alt, ctrl in nav:
             add(km, idname, mouse, alt=alt, ctrl=ctrl)
-        if spec["tools"]:
+        if hotkeys:
             for key, orient in _ORIENT_KEYS:
                 add(km, "wm.context_set_enum", key, props={"data_path": _ORIENT_PATH, "value": orient})
 
-    if spec["tools"]:
+    if hotkeys:
         for km_name in _TOOL_KEYMAPS:
             km = kc.keymaps.new(name=km_name, space_type='EMPTY')
             for key, tool in _TOOL_KEYS:
@@ -235,16 +239,15 @@ def _sync_user_keymaps():
 def _possible_own_sigs():
     """모든 모드의 애드온 항목 서명 (키맵에 남은 지난 모드 항목을 찾는 데 쓴다)."""
     sigs = set()
-    for spec in _MODES.values():
-        for idname, mouse, alt, ctrl in spec["nav"]:
+    for nav in _MODES.values():
+        for idname, mouse, alt, ctrl in nav:
             sigs.add(("3D View", idname, mouse, alt, ctrl, False, ""))
-        if spec["tools"]:
-            for key, orient in _ORIENT_KEYS:
-                sigs.add(("3D View", "wm.context_set_enum", key, False, False, False,
-                          "{:s}={:s}".format(_ORIENT_PATH, orient)))
-            for km_name in _TOOL_KEYMAPS:
-                for key, tool in _TOOL_KEYS:
-                    sigs.add((km_name, "wm.tool_set_by_id", key, False, False, False, tool))
+    for key, orient in _ORIENT_KEYS:
+        sigs.add(("3D View", "wm.context_set_enum", key, False, False, False,
+                  "{:s}={:s}".format(_ORIENT_PATH, orient)))
+    for km_name in _TOOL_KEYMAPS:
+        for key, tool in _TOOL_KEYS:
+            sigs.add((km_name, "wm.tool_set_by_id", key, False, False, False, tool))
     return sigs
 
 
@@ -267,8 +270,7 @@ def _conflict_items(combos, active_only=True):
 
 
 def _disable_conflicts():
-    mode = _current_mode()
-    for _km, kmi in _conflict_items(_mode_combos(mode), active_only=True):
+    for _km, kmi in _conflict_items(_active_combos(), active_only=True):
         kmi.active = False
     return None  # 타이머 1회 실행.
 
@@ -285,10 +287,10 @@ def _restore_conflicts():
             kmi.active = True
 
 
-def _apply_mode(mode):
+def _apply_mode(mode, hotkeys):
     _restore_conflicts()
     _unregister_keymaps()
-    _register_keymaps(mode)
+    _register_keymaps(mode, hotkeys)
     _sync_user_keymaps()
     _disable_conflicts()
 
@@ -313,9 +315,13 @@ def _current_mode():
     return prefs.nav_mode if prefs is not None else 'MAYA'
 
 
-def _update_nav_mode(self, _context):
-    _apply_mode(self.nav_mode)
-    _sync_tool_gizmos()
+def _hotkeys_on():
+    prefs = _prefs()
+    return prefs.use_hotkeys if prefs is not None else True
+
+
+def _update_keys(self, _context):
+    _apply_mode(self.nav_mode, self.use_hotkeys)
 
 
 def _update_gizmo_pref(_self, _context):
@@ -323,6 +329,7 @@ def _update_gizmo_pref(_self, _context):
 
 
 def _draw_mode_ui(layout, prefs):
+    layout.label(text="뷰포트 조작 모드")
     col = layout.column(align=True)
     col.prop(prefs, "nav_mode", expand=True)
     box = layout.box()
@@ -330,15 +337,33 @@ def _draw_mode_ui(layout, prefs):
     for line in _MODE_HELP[prefs.nav_mode]:
         col.label(text=line)
 
+    layout.separator()
+    layout.prop(prefs, "use_hotkeys")
+    box = layout.box()
+    box.active = prefs.use_hotkeys
+    col = box.column(align=True)
+    for line in _HOTKEY_HELP:
+        col.label(text=line)
+
+    layout.separator()
+    layout.prop(prefs, "show_axis_overlay")
+
 
 class DCCNavigationPreferences(bpy.types.AddonPreferences):
     bl_idname = __package__
 
     nav_mode: bpy.props.EnumProperty(
         name="조작 모드",
+        description="뷰포트 마우스 조작 방식 (단축키는 아래에서 따로 켜고 끈다)",
         items=_MODE_ITEMS,
         default='MAYA',
-        update=_update_nav_mode,
+        update=_update_keys,
+    )
+    use_hotkeys: bpy.props.BoolProperty(
+        name="단축키 (QWER, 1/2)",
+        description="Q/W/E/R 툴 전환과 1/2 World/Local 전환. 조작 모드와 상관없이 따로 켜고 끈다",
+        default=True,
+        update=_update_keys,
     )
     show_axis_overlay: bpy.props.BoolProperty(
         name="DCC 기즈모 사용",
@@ -368,9 +393,7 @@ class DCCNavigationPreferences(bpy.types.AddonPreferences):
             box.label(text="Emulate 3 Button Mouse 가 켜져 있어 Alt+왼쪽 드래그가 겹칩니다.", icon='ERROR')
             box.prop(inputs, "use_mouse_emulate_3_button")
 
-        box = layout.box()
-        box.prop(self, "show_axis_overlay")
-        row = box.row()
+        row = layout.row()
         row.active = self.show_axis_overlay
         row.prop(self, "axis_overlay_size")
 
@@ -379,7 +402,7 @@ class DCCNavigationPreferences(bpy.types.AddonPreferences):
         box.prop(inputs, "use_zoom_to_mouse")
         box.prop(inputs, "use_rotate_around_active")
 
-        disabled = _conflict_items(_mode_combos(self.nav_mode), active_only=False)
+        disabled = _conflict_items(_mode_combos(self.nav_mode, self.use_hotkeys), active_only=False)
         if disabled:
             box = layout.box()
             box.label(text="겹쳐서 꺼 둔 기본 단축키 ({:d})".format(len(disabled)))
@@ -398,10 +421,7 @@ class VIEW3D_PT_dcc_navigation(bpy.types.Panel):
         prefs = _prefs()
         if prefs is None:
             return
-        layout = self.layout
-        _draw_mode_ui(layout, prefs)
-        row = layout.row()
-        row.prop(prefs, "show_axis_overlay")
+        _draw_mode_ui(self.layout, prefs)
 
 
 # -----------------------------------------------------------------------------
@@ -438,7 +458,7 @@ _hidden_spaces = set()
 
 def _gizmo_enabled():
     prefs = _prefs()
-    return prefs is not None and prefs.show_axis_overlay and prefs.nav_mode != 'BLENDER'
+    return prefs is not None and prefs.show_axis_overlay
 
 
 def _active_tool_kind(context):
@@ -979,7 +999,7 @@ def register():
     for cls in _classes:
         bpy.utils.register_class(cls)
     mode = _current_mode()
-    _register_keymaps(mode)
+    _register_keymaps(mode, _hotkeys_on())
     if bpy.context.window_manager.keyconfigs.user is not None:
         _disable_conflicts()
     bpy.app.timers.register(_startup_apply, first_interval=1.0)
