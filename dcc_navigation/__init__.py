@@ -1678,6 +1678,10 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
         return {'RUNNING_MODAL'}
 
     def _finish(self, context):
+        # 디버그: 마지막 변환값 (회전은 라디안, 자유 회전은 누적 각도).
+        _debug_invoke["final_kind"] = self.kind
+        _debug_invoke["final_axis"] = self.axis
+        _debug_invoke["final_value"] = self.value if not isinstance(self.value, Vector) else tuple(self.value)
         _state["op"] = None
         context.area.header_text_set(None)
         context.area.tag_redraw()
