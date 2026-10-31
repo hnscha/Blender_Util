@@ -833,6 +833,21 @@ def _gizmo_frame(context):
     return center, _orientation_matrix(context), length
 
 
+def _ring_front(offset, toward, length):
+    """링 위의 점(중심 기준 offset)이 보는 사람 쪽 반원인지. 화면과 나란한 링은 전부 앞쪽."""
+    return offset.dot(toward) >= -0.02 * length
+
+
+def _axis_facing_view(axis, toward):
+    """축이 화면을 거의 똑바로 향해서 점처럼 보이는지 (Max/Maya 는 이런 축 핸들을 숨긴다)."""
+    return abs(axis.normalized().dot(toward)) > 0.97
+
+
+def _plane_edge_on(normal, toward):
+    """두 축 평면이 화면에서 옆으로 누워 선처럼 보이는지 (이때 평면 핸들을 숨긴다)."""
+    return abs(normal.normalized().dot(toward)) < 0.12
+
+
 def _axis_basis(rot, i):
     """i 번 축을 +Z 로 삼는 정규 직교 기저 (side, up, axis)."""
     axis = rot.col[i].normalized()
@@ -975,6 +990,8 @@ def _draw_gizmo():
         factors = _scale_factors(context)
     _state["scale"] = (factors, center.copy()) if factors is not None else None
 
+    toward = rv3d.view_rotation @ Vector((0.0, 0.0, 1.0))
+
     # 기본 기즈모와 같은 모양: 이동 = 화살표, 회전 = 축별 링, 스케일 = 끝이 네모인 축.
     for i in range(3):
         scaling = factors is not None and abs(factors[i] - 1.0) > 1e-3
@@ -983,7 +1000,21 @@ def _draw_gizmo():
         side, up, axis = _axis_basis(rot, i)
 
         if kind == 'ROTATE':
-            lines(loop(circle(center, side, up, length)), color, width)
+            # Max/Maya 처럼 링의 앞쪽 반원만 진하게, 뒤쪽 반원은 흐리게 (뒤쪽은 잡히지도 않는다).
+            ring = circle(center, side, up, length, segs=64)
+            front, back = [], []
+            for s in range(len(ring)):
+                a0, a1 = ring[s], ring[(s + 1) % len(ring)]
+                mid = (a0 + a1) * 0.5 - center
+                (front if _ring_front(mid, toward, length) else back).extend((a0, a1))
+            if back:
+                lines(back, color[:3] + (0.25,), 1.5)
+            if front:
+                lines(front, color, width)
+            continue
+
+        # 화면을 똑바로 향한 축은 Max/Maya 처럼 숨긴다 (점처럼 겹쳐 보여 잘못 잡히기 쉬움).
+        if _axis_facing_view(axis, toward) and not scaling and hot != i:
             continue
 
         axis_len = length
@@ -1025,6 +1056,8 @@ def _draw_gizmo():
         lines(loop(sq), _HIGHLIGHT_COLOR if hot == H_CENTER else white, 2.0)
         # 평면 핸들 = 두 축 평면에서 이동 (Max 의 XY/YZ/XZ 사각형). 색은 법선 축 색.
         for n in range(3):
+            if _plane_edge_on(rot.col[n], toward) and hot != H_PLANE + n:
+                continue
             u = rot.col[(n + 1) % 3].normalized()
             v = rot.col[(n + 2) % 3].normalized()
             pos = center + (u + v) * (length * _PLANE_OFFSET)
@@ -1042,6 +1075,8 @@ def _draw_gizmo():
         lines(loop(ring), _HIGHLIGHT_COLOR if hot == H_CENTER else white, 2.0)
         # 평면 핸들 = 두 축 같이 스케일 (Max 의 평면 스케일). 색은 고정되는 법선 축 색.
         for n in range(3):
+            if _plane_edge_on(rot.col[n], toward) and hot != H_PLANE + n:
+                continue
             u = rot.col[(n + 1) % 3].normalized()
             v = rot.col[(n + 2) % 3].normalized()
             pos = center + (u + v) * (length * _PLANE_OFFSET)
@@ -1760,13 +1795,11 @@ def _rotate_pick(context, location):
             t = s / segs * 2.0 * math.pi
             w = center + (side * math.cos(t) + up * math.sin(t)) * length
             p = view3d_utils.location_3d_to_region_2d(region, rv3d, w)
-            if p is not None and prev is not None:
+            if p is not None and prev is not None and _ring_front(w - center, toward, length):
+                # 뒤쪽 반원은 흐리게만 그리고 잡히지 않는다 (Max/Maya 와 같음).
                 d = _dist_point_segment(mouse, prev, p)
-                if d < tol:
-                    back = (w - center).dot(toward) < 0.0
-                    score = d + (4.0 if back else 0.0)
-                    if best is None or score < best[0]:
-                        best = (score, i)
+                if d < tol and (best is None or d < best[0]):
+                    best = (d, i)
             prev = p
     if best is not None:
         return best[1]
@@ -1910,9 +1943,16 @@ class VIEW3D_GGT_dcc_navigation(bpy.types.GizmoGroup):
 
         hover = None
         view_rot = context.region_data.view_rotation.to_matrix().to_4x4()
+        toward = context.region_data.view_rotation @ Vector((0.0, 0.0, 1.0))
         for k, items in self.handles.items():
             for i, gz in enumerate(items):
                 visible = frame is not None and k == kind
+                if visible and k in {'MOVE', 'SCALE'}:
+                    # 화면을 향한 축 핸들, 옆으로 누운 평면 핸들은 숨긴다 (그리기와 같은 규칙).
+                    if i < 3 and _axis_facing_view(frame[1].col[i], toward):
+                        visible = False
+                    elif i >= H_PLANE and _plane_edge_on(frame[1].col[i - H_PLANE], toward):
+                        visible = False
                 gz.hide = not visible
                 if not visible:
                     continue
