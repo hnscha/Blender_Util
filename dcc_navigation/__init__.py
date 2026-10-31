@@ -634,6 +634,7 @@ _PLANE_OFFSET = 0.32
 _PLANE_SIZE = 0.09
 _VIEW_RING_RADIUS = 1.2
 _TRACKBALL_RADIUS = 0.95
+_PIVOT_AXIS_SIZE = 0.3     # 회전 기즈모 가운데 작은 축 표시 길이
 
 # 마우스가 올라간 축 (GizmoGroup 이 갱신), 변환을 시작할 때 잡은 축.
 _state = {
@@ -1086,6 +1087,11 @@ def _draw_gizmo():
             lines(loop(q), _HIGHLIGHT_COLOR if h else _AXIS_COLORS[n], 1.5)
 
     if kind == 'ROTATE':
+        # 맥스처럼 피봇 위치에 작은 X/Y/Z 축 표시 (현재 좌표계 기준, 회전 중에도 따라 돈다).
+        for i in range(3):
+            axis = rot.col[i].normalized()
+            lines([center, center + axis * (length * _PIVOT_AXIS_SIZE)], _AXIS_COLORS[i], 2.0)
+
         # 링 안쪽 = 자유 회전: 마우스를 올리거나 돌리는 중이면 은은하게 채운다.
         if hot == H_TRACKBALL:
             disc = circle(center, view_x, view_y, length * _TRACKBALL_RADIUS)
