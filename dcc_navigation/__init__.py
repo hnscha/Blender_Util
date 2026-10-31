@@ -347,6 +347,9 @@ def _draw_mode_ui(layout, prefs):
 
     layout.separator()
     layout.prop(prefs, "show_axis_overlay")
+    col = layout.column()
+    col.active = prefs.show_axis_overlay
+    col.prop(prefs, "scale_sensitivity", slider=True)
 
 
 class DCCNavigationPreferences(bpy.types.AddonPreferences):
@@ -379,6 +382,15 @@ class DCCNavigationPreferences(bpy.types.AddonPreferences):
         default=80,
         min=20,
         max=400,
+    )
+    scale_sensitivity: bpy.props.FloatProperty(
+        name="스케일 감도",
+        description="기즈모로 스케일할 때 감도. 1.0 이면 기즈모 길이만큼 끌 때 +1배 (0.5 = 기본, 작을수록 둔함)",
+        default=0.5,
+        min=0.05,
+        max=3.0,
+        step=5,
+        precision=2,
     )
 
     def draw(self, context):
@@ -1229,13 +1241,14 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
                 step = math.radians(5.0)
                 value = round(value / step) * step
             return value
-        # SCALE
+        # SCALE: Maya 처럼 끈 거리에 비례한다. 기즈모 길이(px)/감도 만큼 끌면 +1배.
+        # (잡은 지점까지 거리의 비율로 하면 가운데 근처를 잡았을 때 지나치게 민감해진다.)
         if self.axis == H_CENTER:
             # 가운데 핸들: 전체(균일) 스케일. 중심에서 멀어지면 커지고 가까워지면 작아진다.
-            dist = (mouse - self.c2d).length
-            factor = dist / self.d0
+            moved = (mouse - self.c2d).length - self.d0
         else:
-            factor = (mouse - self.c2d).dot(self.s2d) / self.d0
+            moved = (mouse - self.c2d).dot(self.s2d) - self.d0
+        factor = max(1.0 + moved / self.ref, 0.001)
         if precise:
             factor = 1.0 + (factor - 1.0) * 0.1
         if snap:
@@ -1388,8 +1401,8 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
                     return {'CANCELLED'}
                 self.s2d = (tip2d - self.c2d).normalized()
                 self.d0 = (mouse - self.c2d).dot(self.s2d)
-                if abs(self.d0) < 4.0:
-                    self.d0 = 4.0 if self.d0 >= 0.0 else -4.0
+            prefs = _prefs()
+            self.ref = prefs.axis_overlay_size / max(prefs.scale_sensitivity, 0.01)
             self.value = 1.0
 
         _state["drag"] = self.axis
@@ -1420,6 +1433,61 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
         _state["op"] = None
         context.area.header_text_set(None)
         context.area.tag_redraw()
+
+
+def _dist_point_segment(p, a, b):
+    ab = b - a
+    denom = ab.dot(ab)
+    if denom < 1e-12:
+        return (p - a).length
+    t = max(0.0, min(1.0, (p - a).dot(ab) / denom))
+    return (p - (a + ab * t)).length
+
+
+def _trackball_hit(context, location):
+    """
+    회전 링 안쪽(자유 회전) 영역인지. X/Y/Z 링 근처는 링이 잡히도록 제외한다.
+    (링을 옆에서 보면 가운데를 지나는 선이 되므로, 화면에 그려진 링 선 기준으로 판단한다.)
+    """
+    frame = _gizmo_frame(context)
+    if frame is None:
+        return False
+    center, rot, length = frame
+    region = context.region
+    rv3d = context.region_data
+    c2d = view3d_utils.location_3d_to_region_2d(region, rv3d, center)
+    if c2d is None:
+        return False
+    mouse = Vector(location)
+    size = _prefs().axis_overlay_size
+    if (mouse - c2d).length > size * _TRACKBALL_RADIUS:
+        return False
+    tol = 10.0 * context.preferences.system.ui_scale
+    segs = 48
+    for i in range(3):
+        side, up, _axis = _axis_basis(rot, i)
+        pts = []
+        for s in range(segs):
+            t = s / segs * 2.0 * math.pi
+            p = view3d_utils.location_3d_to_region_2d(
+                region, rv3d, center + (side * math.cos(t) + up * math.sin(t)) * length)
+            if p is not None:
+                pts.append(p)
+        for s in range(len(pts)):
+            if _dist_point_segment(mouse, pts[s], pts[(s + 1) % len(pts)]) < tol:
+                return False
+    return True
+
+
+class DCCNAV_GT_trackball_area(bpy.types.Gizmo):
+    """회전 링 안쪽을 잡는 영역. 직접 판정해서 X/Y/Z 링이 항상 먼저 잡히게 한다. 그리기는 _draw_gizmo 가 한다."""
+    bl_idname = "DCCNAV_GT_trackball_area"
+
+    def draw(self, _context):
+        pass
+
+    def test_select(self, context, location):
+        return 0 if _trackball_hit(context, location) else -1
 
 
 class VIEW3D_GGT_dcc_navigation(bpy.types.GizmoGroup):
@@ -1455,7 +1523,7 @@ class VIEW3D_GGT_dcc_navigation(bpy.types.GizmoGroup):
             + [new("GIZMO_GT_primitive_3d", draw_style='PLANE') for _ in range(3)],
             'ROTATE': [new("GIZMO_GT_dial_3d") for _ in range(3)]
             + [new("GIZMO_GT_dial_3d")]
-            + [new("GIZMO_GT_dial_3d", draw_options={'FILL'}, use_select_background=True)],
+            + [new("DCCNAV_GT_trackball_area")],
             'SCALE': [new("GIZMO_GT_arrow_3d", draw_style='BOX') for _ in range(3)]
             + [new("GIZMO_GT_move_3d", draw_style='RING_2D', draw_options={'FILL', 'ALIGN_VIEW'})]
             + [new("GIZMO_GT_primitive_3d", draw_style='PLANE') for _ in range(3)],
@@ -1602,6 +1670,7 @@ _classes = (
     DCCNavigationPreferences,
     VIEW3D_PT_dcc_navigation,
     DCCNAV_OT_gizmo_transform,
+    DCCNAV_GT_trackball_area,
     VIEW3D_GGT_dcc_navigation,
 )
 
