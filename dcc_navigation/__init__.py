@@ -423,6 +423,7 @@ def _draw_mode_ui(layout, prefs):
             col.label(text="Each bone/object turns in place", translate=False)
         else:
             col.label(text="All turn around one center", translate=False)
+        col.prop(prefs, "default_individual_pivot", translate=False)
 
 
 class DCCNAV_OT_apply_mode(bpy.types.Operator):
@@ -509,6 +510,11 @@ class DCCNavigationPreferences(bpy.types.AddonPreferences):
              "Blender's transform everywhere: snapping, numeric input, Auto IK, mirror (constraint lines shown)"),
         ),
         default='ANIMATION',
+    )
+    default_individual_pivot: bpy.props.BoolProperty(
+        name="Default Pivot: Individual",
+        description="Set the pivot to Individual Origins whenever a file is opened or created",
+        default=True,
     )
     scale_sensitivity: bpy.props.FloatProperty(
         name="Scale Sensitivity",
@@ -1922,6 +1928,28 @@ _classes = (
 
 
 # -----------------------------------------------------------------------------
+# 기본 피봇
+
+def _set_default_pivot():
+    """기본 피봇을 개별 원점(Individual Origins)으로. 파일을 열거나 새로 만들 때 한 번 맞추고, 그 뒤 변경은 사용자 몫."""
+    prefs = _prefs()
+    if prefs is None or not prefs.default_individual_pivot:
+        return
+    for scene in bpy.data.scenes:
+        scene.tool_settings.transform_pivot_point = 'INDIVIDUAL_ORIGINS'
+
+
+@bpy.app.handlers.persistent
+def _on_load_post(_dummy):
+    _set_default_pivot()
+
+
+def _default_pivot_timer():
+    _set_default_pivot()
+    return None  # 1회 실행.
+
+
+# -----------------------------------------------------------------------------
 # 등록
 
 def register():
@@ -1938,6 +1966,10 @@ def register():
     if bpy.context.window_manager.keyconfigs.user is not None:
         _disable_conflicts()
     bpy.app.timers.register(_startup_apply, first_interval=1.0)
+    if _on_load_post not in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.append(_on_load_post)
+    # 등록 중에는 bpy.data 에 접근할 수 없어서, 지금 열린 파일의 피봇은 잠시 뒤에 맞춘다.
+    bpy.app.timers.register(_default_pivot_timer, first_interval=0.1)
     if not bpy.app.background:
         _draw_handle = bpy.types.SpaceView3D.draw_handler_add(
             _draw_gizmo, (), 'WINDOW', 'POST_VIEW',
@@ -1961,6 +1993,8 @@ def unregister():
         _text_handle = None
     if bpy.app.timers.is_registered(_startup_apply):
         bpy.app.timers.unregister(_startup_apply)
+    if _on_load_post in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(_on_load_post)
     _restore_conflicts()
     _unregister_keymaps()
     # 활성 키맵에 남은 애드온 항목 사본을 바로 걷어낸다.
