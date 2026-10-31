@@ -57,10 +57,12 @@ _ORIENT_KEYS = (
 # 모드는 뷰포트 마우스 조작만 바꾼다. 단축키(QWER, 1/2)는 모드와 따로 켜고 끈다.
 _MODES = {
     'BLENDER': (),
+    # Maya / Unreal / Unity 공통. 가운데 드래그만으로 이동(Pan)은 Unreal·Unity 방식이고 Maya 와도 겹치지 않는다.
     'MAYA': (
         ("view3d.rotate", "LEFTMOUSE", True, False),
         ("view3d.move", "MIDDLEMOUSE", True, False),
         ("view3d.zoom", "RIGHTMOUSE", True, False),
+        ("view3d.move", "MIDDLEMOUSE", False, False),
     ),
     'MAX': (
         ("view3d.move", "MIDDLEMOUSE", False, False),
@@ -71,7 +73,7 @@ _MODES = {
 
 _MODE_ITEMS = (
     ('BLENDER', "Blender Default", "Blender's default viewport navigation"),
-    ('MAYA', "Maya / Unreal", "Alt + Left/Middle/Right drag = Orbit/Pan/Zoom"),
+    ('MAYA', "Maya / Unreal / Unity", "Alt + Left/Middle/Right drag = Orbit/Pan/Zoom, Middle drag = Pan"),
     ('MAX', "3ds Max", "Middle drag = Pan, Alt+Middle = Orbit, Ctrl+Alt+Middle = Zoom"),
 )
 
@@ -83,8 +85,8 @@ _MODE_HELP = {
     ),
     'MAYA': (
         "Alt + LMB : Orbit",
-        "Alt + MMB : Pan",
-        "Alt + RMB : Zoom",
+        "Alt + MMB / MMB : Pan",
+        "Alt + RMB / Wheel : Zoom",
     ),
     'MAX': (
         "MMB : Pan",
