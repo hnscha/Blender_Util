@@ -64,11 +64,16 @@ _MODES = {
         ("view3d.move", "MIDDLEMOUSE", True, False),
         ("view3d.zoom", "RIGHTMOUSE", True, False),
         ("dccnav.mmb_manipulate", "MIDDLEMOUSE", False, False),
+        # Alt 를 누른 채 휠을 굴려도 줌 (Alt 로 뷰를 다루다가 휠을 굴리는 경우).
+        ("view3d.zoom", "WHEELINMOUSE", True, False, {"delta": 1}),
+        ("view3d.zoom", "WHEELOUTMOUSE", True, False, {"delta": -1}),
     ),
     'MAX': (
         ("view3d.move", "MIDDLEMOUSE", False, False),
         ("view3d.rotate", "MIDDLEMOUSE", True, False),
         ("view3d.zoom", "MIDDLEMOUSE", True, True),
+        ("view3d.zoom", "WHEELINMOUSE", True, False, {"delta": 1}),
+        ("view3d.zoom", "WHEELOUTMOUSE", True, False, {"delta": -1}),
     ),
 }
 
@@ -87,13 +92,13 @@ _MODE_HELP = {
     'MAYA': (
         "Alt + LMB : Orbit",
         "Alt + MMB : Pan",
-        "Alt + RMB / Wheel : Zoom",
+        "Alt + RMB / Wheel / Alt + Wheel : Zoom",
         "MMB : Drag active gizmo handle",
     ),
     'MAX': (
         "MMB : Pan",
         "Alt + MMB : Orbit",
-        "Ctrl + Alt + MMB / Wheel : Zoom",
+        "Ctrl + Alt + MMB / Wheel / Alt + Wheel : Zoom",
     ),
 }
 
@@ -139,7 +144,7 @@ _MODE_EXTRA_OFF = {
 
 def _mode_combos(mode, hotkeys):
     """지금 쓰는 (키, alt, ctrl) 조합. shift/oskey 는 쓰지 않는다."""
-    combos = {(mouse, alt, ctrl) for _, mouse, alt, ctrl in _MODES[mode]} | _MODE_EXTRA_OFF[mode]
+    combos = {(item[1], item[2], item[3]) for item in _MODES[mode]} | _MODE_EXTRA_OFF[mode]
     if hotkeys:
         combos |= _HOTKEY_COMBOS
     return combos
@@ -195,8 +200,10 @@ def _register_keymaps(mode, hotkeys):
 
     if nav or hotkeys:
         km = kc.keymaps.new(name="3D View", space_type='VIEW_3D')
-        for idname, mouse, alt, ctrl in nav:
-            add(km, idname, mouse, alt=alt, ctrl=ctrl)
+        for item in nav:
+            idname, mouse, alt, ctrl = item[:4]
+            props = item[4] if len(item) > 4 else {}
+            add(km, idname, mouse, alt=alt, ctrl=ctrl, props=props)
         if hotkeys:
             for key, orient in _ORIENT_KEYS:
                 add(km, "wm.context_set_enum", key, props={"data_path": _ORIENT_PATH, "value": orient})
@@ -258,7 +265,8 @@ def _possible_own_sigs():
     """모든 모드의 애드온 항목 서명 (키맵에 남은 지난 모드 항목을 찾는 데 쓴다)."""
     sigs = set()
     for nav in _MODES.values():
-        for idname, mouse, alt, ctrl in nav:
+        for item in nav:
+            idname, mouse, alt, ctrl = item[:4]
             sigs.add(("3D View", idname, mouse, alt, ctrl, False, ""))
     for key, orient in _ORIENT_KEYS:
         sigs.add(("3D View", "wm.context_set_enum", key, False, False, False,
