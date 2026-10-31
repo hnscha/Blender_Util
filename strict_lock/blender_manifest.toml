@@ -1,0 +1,12 @@
+schema_version = "1.0.0"
+
+id = "strict_lock"
+version = "1.0.0"
+name = "Strict Lock"
+tagline = "Locked transform channels really stay locked"
+maintainer = "HS"
+type = "add-on"
+
+blender_version_min = "4.4.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
