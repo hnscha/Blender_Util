@@ -11,8 +11,9 @@ Blender 용 유틸리티 애드온 모음.
 
 ## 릴리스와 설치
 
-- `<폴더>-v<버전>` 형식의 태그를 푸시하면 GitHub Actions 가 그 애드온 폴더를 zip 으로 묶어 Releases 에 올린다. 예: `git tag dcc_navigation-v1.0.0 && git push origin dcc_navigation-v1.0.0`
-- 태그의 버전은 그 폴더 `blender_manifest.toml` 의 `version` 과 같아야 한다. 다르면 릴리스가 실패한다.
+- GitHub 저장소의 Actions 탭 > "Release add-on" > Run workflow 에서 애드온 폴더 이름(예: `dcc_navigation`)을 넣고 실행하면, 그 폴더 `blender_manifest.toml` 의 `version` 으로 `<폴더>-v<버전>` 태그를 만들고 zip 을 Releases 에 올린다.
+- 같은 형식의 태그를 직접 푸시해도 된다. 예: `git tag dcc_navigation-v1.0.0 && git push origin dcc_navigation-v1.0.0`. 이때 태그 버전이 manifest `version` 과 다르면 릴리스가 실패한다.
+- 새 버전을 낼 때는 manifest 의 `version` 을 먼저 올린다.
 - 다른 PC 에서는 Releases 에서 zip 을 받아 Blender 창에 끌어다 놓거나, Preferences > Add-ons > Install from Disk 로 설치한다 (Blender 4.2+).
 
 ## 애드온 목록
