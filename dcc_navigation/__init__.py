@@ -11,7 +11,8 @@ DCC Navigation — 뷰포트 조작 모드 전환 애드온 (Blender 기본 / Ma
 모드는 3D 뷰포트 N 패널의 "DCC Nav" 탭이나 애드온 설정에서 바꾸고, 환경 설정에 저장되어 재시작 후에도 유지된다.
 Object / Edit / Pose 모드, Layout / Modeling / Animating 등 모든 워크스페이스에서 같다.
 선택한 모드와 같은 키를 쓰는 Blender 기본 단축키만 활성 키맵에서 꺼 두고, 모드를 바꾸거나 애드온을 끄면 되돌린다.
-이동/회전/스케일 중에는 Blender 가 숨기는 기즈모 대신 같은 모양의 X/Y/Z 기즈모를 그린다 (현재 좌표계 기준).
+DCC 기즈모: Move / Rotate / Scale 툴의 Blender 기즈모를 숨기고, 대기 중과 변환 중에 모양이 똑같은 기즈모를 그린다.
+변환 중에도 X/Y/Z 가 모두 보이고 사라지거나 바뀌지 않는다 (현재 좌표계·피봇 기준). "Blender 기본" 모드에서는 쓰지 않는다.
 """
 
 import math
@@ -313,6 +314,11 @@ def _current_mode():
 
 def _update_nav_mode(self, _context):
     _apply_mode(self.nav_mode)
+    _sync_tool_gizmos()
+
+
+def _update_gizmo_pref(_self, _context):
+    _sync_tool_gizmos()
 
 
 def _draw_mode_ui(layout, prefs):
@@ -334,9 +340,13 @@ class DCCNavigationPreferences(bpy.types.AddonPreferences):
         update=_update_nav_mode,
     )
     show_axis_overlay: bpy.props.BoolProperty(
-        name="변환 중 기즈모 유지",
-        description="이동/회전/스케일 중에도 X/Y/Z 기즈모(화살표/링/스케일 핸들)를 계속 그린다",
+        name="DCC 기즈모 사용",
+        description=(
+            "Move/Rotate/Scale 툴의 Blender 기즈모 대신, 대기 중과 변환 중 모양이 같은 기즈모를 쓴다.\n"
+            "변환 중에도 X/Y/Z 가 모두 계속 보인다"
+        ),
         default=True,
+        update=_update_gizmo_pref,
     )
     axis_overlay_size: bpy.props.IntProperty(
         name="기즈모 크기 (px)",
@@ -393,20 +403,48 @@ class VIEW3D_PT_dcc_navigation(bpy.types.Panel):
         row.prop(prefs, "show_axis_overlay")
 
 
-_classes = (
-    DCCNavigationPreferences,
-    VIEW3D_PT_dcc_navigation,
-)
-
-
 # -----------------------------------------------------------------------------
-# 변환 중 축 표시
+# DCC 기즈모
+#
+# 그리기는 한 곳(_draw_gizmo)에서만 한다. 대기 중이든 변환 중이든 같은 함수, 같은 크기·위치 계산이라
+# 바뀌거나 깜빡이는 순간이 없다. 마우스로 잡는 부분은 투명한 GizmoGroup 이 같은 위치·크기로 맡는다.
 
 _AXIS_COLORS = (
     (1.0, 0.2, 0.32, 1.0),
     (0.54, 0.86, 0.0, 1.0),
     (0.16, 0.56, 1.0, 1.0),
 )
+_HIGHLIGHT_COLOR = (1.0, 0.85, 0.2, 1.0)
+
+_TOOL_KINDS = {
+    "builtin.move": 'MOVE',
+    "builtin.rotate": 'ROTATE',
+    "builtin.scale": 'SCALE',
+}
+# DCC 기즈모를 쓰는 모드. 그 밖의 모드(커브·격자 편집 등)는 Blender 기즈모를 그대로 쓴다.
+_GIZMO_MODES = {'OBJECT', 'EDIT_MESH', 'EDIT_ARMATURE', 'POSE'}
+
+# 마우스가 올라간 축 (GizmoGroup 이 갱신), 변환을 시작할 때 잡은 축.
+_state = {"hover": None, "drag": None, "running": None}
+# 우리가 Blender 툴 기즈모를 숨긴 SpaceView3D 들 (as_pointer).
+_hidden_spaces = set()
+
+
+def _gizmo_enabled():
+    prefs = _prefs()
+    return prefs is not None and prefs.show_axis_overlay and prefs.nav_mode != 'BLENDER'
+
+
+def _active_tool_kind(context):
+    if context.mode not in _GIZMO_MODES:
+        return None
+    try:
+        tool = context.workspace.tools.from_space_view3d_mode(context.mode, create=False)
+    except (AttributeError, TypeError, RuntimeError):
+        return None
+    if tool is None:
+        return None
+    return _TOOL_KINDS.get(tool.idname)
 
 
 def _op_kind(op):
@@ -450,37 +488,62 @@ def _transform_running(context):
     return None
 
 
-def _selection_center(context):
+def _points_center(points, pivot):
+    if not points:
+        return None
+    if pivot == 'BOUNDING_BOX_CENTER':
+        lo = Vector((min(p.x for p in points), min(p.y for p in points), min(p.z for p in points)))
+        hi = Vector((max(p.x for p in points), max(p.y for p in points), max(p.z for p in points)))
+        return (lo + hi) * 0.5
+    return sum(points, Vector()) / len(points)
+
+
+def _selection_points(context):
+    """선택된 대상의 월드 위치 목록과 활성 대상의 위치."""
     obj = context.active_object
     mode = context.mode
+    pts = []
+    active = None
 
     if mode == 'EDIT_MESH' and obj is not None and obj.type == 'MESH':
         bm = bmesh.from_edit_mesh(obj.data)
-        pts = [v.co for v in bm.verts if v.select]
-        if pts:
-            return obj.matrix_world @ (sum(pts, Vector()) / len(pts))
+        mw = obj.matrix_world
+        pts = [mw @ v.co for v in bm.verts if v.select]
+        act = bm.select_history.active
+        if isinstance(act, bmesh.types.BMVert):
+            active = mw @ act.co
     elif mode == 'EDIT_ARMATURE' and obj is not None:
-        pts = []
+        mw = obj.matrix_world
         for b in obj.data.edit_bones:
             if b.select_head:
-                pts.append(b.head)
+                pts.append(mw @ b.head)
             if b.select_tail:
-                pts.append(b.tail)
-        if pts:
-            return obj.matrix_world @ (sum(pts, Vector()) / len(pts))
+                pts.append(mw @ b.tail)
+        if obj.data.edit_bones.active is not None:
+            active = mw @ obj.data.edit_bones.active.head
     elif mode == 'POSE' and obj is not None:
-        pbs = context.selected_pose_bones or []
-        if pbs:
-            pts = [pb.id_data.matrix_world @ pb.head for pb in pbs]
-            return sum(pts, Vector()) / len(pts)
+        pts = [pb.id_data.matrix_world @ pb.head for pb in (context.selected_pose_bones or [])]
+        if context.active_pose_bone is not None:
+            pb = context.active_pose_bone
+            active = pb.id_data.matrix_world @ pb.head
     elif mode == 'OBJECT':
-        objs = context.selected_objects
-        if objs:
-            return sum((o.matrix_world.translation for o in objs), Vector()) / len(objs)
+        pts = [o.matrix_world.translation.copy() for o in context.selected_objects]
+        if obj is not None and obj.select_get():
+            active = obj.matrix_world.translation.copy()
+    return pts, active
 
-    if obj is not None:
-        return obj.matrix_world.translation.copy()
-    return None
+
+def _selection_center(context):
+    """Blender 기즈모와 같은 규칙으로 변환 중심(피봇)을 구한다."""
+    pivot = context.scene.tool_settings.transform_pivot_point
+    pts, active = _selection_points(context)
+    if not pts:
+        return None
+    if pivot == 'CURSOR':
+        return context.scene.cursor.location.copy()
+    if pivot == 'ACTIVE_ELEMENT' and active is not None:
+        return active
+    return _points_center(pts, pivot)
 
 
 def _orientation_matrix(context):
@@ -511,43 +574,73 @@ def _orientation_matrix(context):
     return mat.to_3x3().normalized()
 
 
-def _draw_axis_overlay():
-    context = bpy.context
+def _gizmo_frame(context):
+    """
+    기즈모의 중심, 축 행렬, 월드 길이. 그리기와 GizmoGroup 이 같은 값을 쓴다.
+    화면에서 길이가 항상 '기즈모 크기(px)' 가 되도록 월드 길이를 구한다.
+    """
     prefs = _prefs()
-    if prefs is None or not prefs.show_axis_overlay:
-        return
-    kind = _transform_running(context)
-    if kind is None:
-        return
     region = context.region
     rv3d = context.region_data
-    if region is None or rv3d is None:
-        return
-
+    if prefs is None or region is None or rv3d is None:
+        return None
     center = _selection_center(context)
     if center is None:
-        return
+        return None
     p2d = view3d_utils.location_3d_to_region_2d(region, rv3d, center)
-    if p2d is None:
-        return
-
-    # 화면에서 일정한 픽셀 길이가 되도록 월드 길이를 구한다.
     right = rv3d.view_rotation @ Vector((1.0, 0.0, 0.0))
     q2d = view3d_utils.location_3d_to_region_2d(region, rv3d, center + right)
-    if q2d is None or (q2d - p2d).length < 1e-6:
-        return
+    if p2d is None or q2d is None or (q2d - p2d).length < 1e-6:
+        return None
     length = prefs.axis_overlay_size / (q2d - p2d).length
+    return center, _orientation_matrix(context), length
 
-    rot = _orientation_matrix(context)
+
+def _axis_basis(rot, i):
+    """i 번 축을 +Z 로 삼는 정규 직교 기저 (side, up, axis)."""
+    axis = rot.col[i].normalized()
+    side = axis.orthogonal().normalized()
+    up = axis.cross(side).normalized()
+    return side, up, axis
+
+
+def _current_kind(context):
+    """지금 그릴 기즈모 종류: 변환 중이면 그 변환, 아니면 활성 툴."""
+    running = _transform_running(context)
+    if running is not None:
+        if _state["running"] is None:
+            # 변환이 막 시작됐다: 그때 마우스가 올라가 있던 축을 잡은 축으로 기억한다.
+            _state["drag"] = _state["hover"]
+        _state["running"] = running
+        return running
+    _state["running"] = None
+    _state["drag"] = None
+    return _active_tool_kind(context)
+
+
+def _draw_gizmo():
+    context = bpy.context
+    if not _gizmo_enabled():
+        return
+    kind = _current_kind(context)
+    if kind is None:
+        return
+    frame = _gizmo_frame(context)
+    if frame is None:
+        return
+    center, rot, length = frame
+    region = context.region
+    rv3d = context.region_data
+
     shader = gpu.shader.from_builtin('POLYLINE_UNIFORM_COLOR')
     tri_shader = gpu.shader.from_builtin('UNIFORM_COLOR')
     gpu.state.depth_test_set('NONE')
     gpu.state.blend_set('ALPHA')
 
     shader.uniform_float("viewportSize", (region.width, region.height))
-    shader.uniform_float("lineWidth", 2.5)
 
-    def lines(points, color):
+    def lines(points, color, width=2.5):
+        shader.uniform_float("lineWidth", width)
         shader.uniform_float("color", color)
         batch_for_shader(shader, 'LINES', {"pos": points}).draw(shader)
 
@@ -556,24 +649,26 @@ def _draw_axis_overlay():
         batch_for_shader(tri_shader, 'TRIS', {"pos": points}).draw(tri_shader)
 
     def circle(c, a, b, radius, segs=48):
-        pts = [c + (a * math.cos(s / segs * 2.0 * math.pi) + b * math.sin(s / segs * 2.0 * math.pi)) * radius
-               for s in range(segs)]
-        return pts
+        return [c + (a * math.cos(s / segs * 2.0 * math.pi) + b * math.sin(s / segs * 2.0 * math.pi)) * radius
+                for s in range(segs)]
+
+    def loop(pts):
+        return [p for s in range(len(pts)) for p in (pts[s], pts[(s + 1) % len(pts)])]
+
+    hot = _state["drag"] if _state["running"] is not None else _state["hover"]
 
     # 기본 기즈모와 같은 모양: 이동 = 화살표, 회전 = 축별 링, 스케일 = 끝이 네모인 축.
     for i in range(3):
-        color = _AXIS_COLORS[i]
-        axis = rot.col[i].normalized()
-        side = axis.orthogonal().normalized()
-        up = axis.cross(side).normalized()
+        color = _HIGHLIGHT_COLOR if hot == i else _AXIS_COLORS[i]
+        width = 3.5 if hot == i else 2.5
+        side, up, axis = _axis_basis(rot, i)
 
         if kind == 'ROTATE':
-            ring = circle(center, side, up, length)
-            lines([p for s in range(len(ring)) for p in (ring[s], ring[(s + 1) % len(ring)])], color)
+            lines(loop(circle(center, side, up, length)), color, width)
             continue
 
         tip = center + axis * length
-        lines([center, tip], color)
+        lines([center, tip], color, width)
 
         if kind == 'SCALE':
             h = length * 0.06
@@ -590,10 +685,149 @@ def _draw_axis_overlay():
         # 화면 방향 바깥 링 (기본 회전 기즈모의 흰 링).
         view_x = rv3d.view_rotation @ Vector((1.0, 0.0, 0.0))
         view_y = rv3d.view_rotation @ Vector((0.0, 1.0, 0.0))
-        ring = circle(center, view_x, view_y, length * 1.2)
-        lines([p for s in range(len(ring)) for p in (ring[s], ring[(s + 1) % len(ring)])], (1.0, 1.0, 1.0, 0.6))
+        lines(loop(circle(center, view_x, view_y, length * 1.2)), (1.0, 1.0, 1.0, 0.6))
 
     gpu.state.blend_set('NONE')
+
+
+class VIEW3D_GGT_dcc_navigation(bpy.types.GizmoGroup):
+    """
+    마우스로 잡는 부분만 맡는 투명 기즈모. 위치·축·크기는 _gizmo_frame 과 같아서
+    보이는 기즈모(_draw_gizmo)와 잡히는 영역이 일치한다.
+    """
+    bl_idname = "VIEW3D_GGT_dcc_navigation"
+    bl_label = "DCC Navigation Gizmo"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'WINDOW'
+    bl_options = {'3D', 'PERSISTENT'}
+
+    @classmethod
+    def poll(cls, context):
+        return _gizmo_enabled() and _active_tool_kind(context) is not None
+
+    def setup(self, _context):
+        self.handles = {}
+        for kind in ('MOVE', 'ROTATE', 'SCALE'):
+            items = []
+            for i in range(3):
+                if kind == 'ROTATE':
+                    gz = self.gizmos.new("GIZMO_GT_dial_3d")
+                else:
+                    gz = self.gizmos.new("GIZMO_GT_arrow_3d")
+                    gz.draw_style = 'BOX' if kind == 'SCALE' else 'NORMAL'
+                gz.use_draw_scale = False
+                gz.color = _AXIS_COLORS[i][:3]
+                gz.color_highlight = _HIGHLIGHT_COLOR[:3]
+                # 보이는 모양은 _draw_gizmo 가 그린다. 이 기즈모는 잡는 영역만 제공한다.
+                gz.alpha = 0.0
+                gz.alpha_highlight = 0.0
+                items.append(gz)
+            self.handles[kind] = items
+        self.bound = None
+
+    def _bind(self, orient):
+        for kind, items in self.handles.items():
+            for i, gz in enumerate(items):
+                axis = [False, False, False]
+                axis[i] = True
+                if kind == 'MOVE':
+                    props = gz.target_set_operator("transform.translate")
+                elif kind == 'ROTATE':
+                    props = gz.target_set_operator("transform.rotate")
+                    props.orient_axis = "XYZ"[i]
+                else:
+                    props = gz.target_set_operator("transform.resize")
+                props.constraint_axis = axis
+                props.orient_type = orient
+                props.release_confirm = True
+        self.bound = orient
+
+    def draw_prepare(self, context):
+        kind = _active_tool_kind(context)
+        frame = _gizmo_frame(context) if kind is not None else None
+        orient = context.scene.transform_orientation_slots[0].type
+        if self.bound != orient:
+            self._bind(orient)
+
+        hover = None
+        for k, items in self.handles.items():
+            for i, gz in enumerate(items):
+                visible = frame is not None and k == kind
+                gz.hide = not visible
+                if not visible:
+                    continue
+                center, rot, length = frame
+                side, up, axis = _axis_basis(rot, i)
+                basis = Matrix((side, up, axis)).transposed().to_4x4()
+                gz.matrix_basis = Matrix.Translation(center) @ basis @ Matrix.Scale(length, 4)
+                if gz.is_highlight:
+                    hover = i
+        _state["hover"] = hover
+
+
+# -----------------------------------------------------------------------------
+# Blender 툴 기즈모 숨기기
+
+def _iter_view3d_spaces():
+    """(window, space) 쌍."""
+    wm = bpy.context.window_manager
+    if wm is None:
+        return
+    for win in wm.windows:
+        for area in win.screen.areas:
+            if area.type == 'VIEW_3D':
+                for space in area.spaces:
+                    if space.type == 'VIEW_3D':
+                        yield win, space
+
+
+def _window_wants_hide(win):
+    if not _gizmo_enabled():
+        return False
+    try:
+        with bpy.context.temp_override(window=win):
+            return _active_tool_kind(bpy.context) is not None
+    except (TypeError, RuntimeError, AttributeError):
+        return False
+
+
+def _sync_tool_gizmos():
+    """
+    DCC 기즈모를 쓰는 동안 Move/Rotate/Scale 툴일 때만 Blender 툴 기즈모를 숨긴다.
+    다른 툴(돌출, 베벨 등)의 기즈모는 그대로 보이게, 우리가 숨긴 것만 되돌린다.
+    """
+    wants = {}
+    for win, space in list(_iter_view3d_spaces()):
+        if win not in wants:
+            wants[win] = _window_wants_hide(win)
+        want_hide = wants[win]
+        key = space.as_pointer()
+        if want_hide:
+            if space.show_gizmo_tool:
+                space.show_gizmo_tool = False
+                _hidden_spaces.add(key)
+        elif key in _hidden_spaces:
+            space.show_gizmo_tool = True
+            _hidden_spaces.discard(key)
+
+
+def _tool_gizmo_timer():
+    _sync_tool_gizmos()
+    return 0.2
+
+
+def _restore_tool_gizmos():
+    for _win, space in _iter_view3d_spaces():
+        if space.as_pointer() in _hidden_spaces:
+            space.show_gizmo_tool = True
+    _hidden_spaces.clear()
+
+
+_classes = (
+    DCCNavigationPreferences,
+    VIEW3D_PT_dcc_navigation,
+    VIEW3D_GGT_dcc_navigation,
+)
 
 
 # -----------------------------------------------------------------------------
@@ -610,12 +844,16 @@ def register():
     bpy.app.timers.register(_startup_apply, first_interval=1.0)
     if not bpy.app.background:
         _draw_handle = bpy.types.SpaceView3D.draw_handler_add(
-            _draw_axis_overlay, (), 'WINDOW', 'POST_VIEW',
+            _draw_gizmo, (), 'WINDOW', 'POST_VIEW',
         )
+        bpy.app.timers.register(_tool_gizmo_timer, first_interval=0.5, persistent=True)
 
 
 def unregister():
     global _draw_handle
+    if bpy.app.timers.is_registered(_tool_gizmo_timer):
+        bpy.app.timers.unregister(_tool_gizmo_timer)
+    _restore_tool_gizmos()
     if _draw_handle is not None:
         bpy.types.SpaceView3D.draw_handler_remove(_draw_handle, 'WINDOW')
         _draw_handle = None
