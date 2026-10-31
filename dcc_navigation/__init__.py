@@ -117,6 +117,8 @@ _own_sigs = set()
 _draw_handle = None
 # 축 표시 디버그용: 최근에 감지한 (시각, 모달 오퍼레이터 목록, 종류).
 _last_seen = []
+# 기즈모 드래그 시작 판정 디버그용.
+_debug_invoke = {}
 
 
 # -----------------------------------------------------------------------------
@@ -1572,6 +1574,15 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
         rot = _orientation_matrix(context)
         region = context.region
         rv3d = context.region_data
+        # 회전 기즈모는 누른 순간(PRESS) 시작된다. Blender 가 고른 부분과 우리 판정이 어긋나는 일이 없도록
+        # 누른 위치를 같은 판정(_rotate_pick)으로 다시 확인해서 그 부분을 쓴다.
+        if self.kind == 'ROTATE':
+            part = _rotate_pick(context, (event.mouse_region_x, event.mouse_region_y))
+            _debug_invoke.clear()
+            _debug_invoke.update({"given_axis": self.axis, "pick": part,
+                                  "mouse": (event.mouse_region_x, event.mouse_region_y)})
+            if part is not None:
+                self.axis = part
         view_x = rv3d.view_rotation @ Vector((1.0, 0.0, 0.0))
         view_y = rv3d.view_rotation @ Vector((0.0, 1.0, 0.0))
         toward = rv3d.view_rotation @ Vector((0.0, 0.0, 1.0))
