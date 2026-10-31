@@ -18,6 +18,7 @@ DCC 기즈모: Move / Rotate / Scale 툴의 Blender 기즈모를 숨기고, 대�
 import math
 import time
 
+import blf
 import bmesh
 import bpy
 import gpu
@@ -425,7 +426,8 @@ _TOOL_KINDS = {
 _GIZMO_MODES = {'OBJECT', 'EDIT_MESH', 'EDIT_ARMATURE', 'POSE'}
 
 # 마우스가 올라간 축 (GizmoGroup 이 갱신), 변환을 시작할 때 잡은 축.
-_state = {"hover": None, "drag": None, "running": None}
+_state = {"hover": None, "drag": None, "running": None, "start_q": None, "start_rot": None, "angle": None}
+_text_handle = None
 # 우리가 Blender 툴 기즈모를 숨긴 SpaceView3D 들 (as_pointer).
 _hidden_spaces = set()
 
@@ -604,18 +606,66 @@ def _axis_basis(rot, i):
     return side, up, axis
 
 
+def _active_quat(context):
+    """회전량 표시에 쓰는 활성 대상의 월드 회전. 편집 모드는 None."""
+    obj = context.active_object
+    if obj is None:
+        return None
+    if context.mode == 'OBJECT':
+        return obj.matrix_world.to_quaternion()
+    if context.mode == 'POSE' and context.active_pose_bone is not None:
+        return (obj.matrix_world @ context.active_pose_bone.matrix).to_quaternion()
+    return None
+
+
 def _current_kind(context):
     """지금 그릴 기즈모 종류: 변환 중이면 그 변환, 아니면 활성 툴."""
     running = _transform_running(context)
     if running is not None:
         if _state["running"] is None:
-            # 변환이 막 시작됐다: 그때 마우스가 올라가 있던 축을 잡은 축으로 기억한다.
+            # 변환이 막 시작됐다: 그때 마우스가 올라가 있던 축을 잡은 축으로 기억하고,
+            # 회전량(Maya/Max 의 각도 부채꼴·숫자) 계산 기준을 잡아 둔다.
             _state["drag"] = _state["hover"]
+            _state["start_q"] = _active_quat(context)
+            _state["start_rot"] = _orientation_matrix(context)
         _state["running"] = running
         return running
     _state["running"] = None
     _state["drag"] = None
+    _state["start_q"] = None
+    _state["start_rot"] = None
+    _state["angle"] = None
     return _active_tool_kind(context)
+
+
+def _rotation_progress(context, hot):
+    """
+    변환 시작부터 지금까지의 회전: (축 번호, 시작 기저의 축 벡터, 각도 라디안).
+    잡은 축이 없으면(키로 시작한 자유 회전 등) 회전축과 가장 가까운 기저 축을 쓴다.
+    """
+    start_q = _state["start_q"]
+    start_rot = _state["start_rot"]
+    cur = _active_quat(context)
+    if start_q is None or start_rot is None or cur is None:
+        return None
+    delta = cur @ start_q.inverted()
+    angle = delta.angle
+    if angle < 1e-6:
+        i = hot if hot is not None else 0
+        return i, start_rot.col[i].normalized(), 0.0
+    d_axis = delta.axis
+    if hot is None:
+        dots = [abs(d_axis.dot(start_rot.col[j].normalized())) for j in range(3)]
+        i = dots.index(max(dots))
+    else:
+        i = hot
+    a = start_rot.col[i].normalized()
+    theta = angle if d_axis.dot(a) >= 0.0 else -angle
+    if theta > math.pi:
+        theta -= 2.0 * math.pi
+    elif theta < -math.pi:
+        theta += 2.0 * math.pi
+    return i, a, theta
 
 
 def _draw_gizmo():
@@ -687,7 +737,54 @@ def _draw_gizmo():
         view_y = rv3d.view_rotation @ Vector((0.0, 1.0, 0.0))
         lines(loop(circle(center, view_x, view_y, length * 1.2)), (1.0, 1.0, 1.0, 0.6))
 
+        # Maya/Max 처럼 돌린 만큼을 부채꼴로 채워 보여 준다 (시작 위치 기준).
+        progress = _rotation_progress(context, hot) if _state["running"] == 'ROTATE' else None
+        _state["angle"] = None
+        if progress is not None:
+            i, a, theta = progress
+            _state["angle"] = (i, math.degrees(theta), center.copy())
+            r0 = view_y - a * view_y.dot(a)
+            if r0.length < 1e-6:
+                r0 = a.orthogonal()
+            r0.normalize()
+            b = a.cross(r0)
+            steps = max(2, int(abs(theta) / (2.0 * math.pi) * 64))
+            arc = [center + (r0 * math.cos(theta * s / steps) + b * math.sin(theta * s / steps)) * length
+                   for s in range(steps + 1)]
+            if abs(theta) > 1e-4:
+                fill = _AXIS_COLORS[i][:3] + (0.25,)
+                tris([p for s in range(steps) for p in (center, arc[s], arc[s + 1])], fill)
+            lines([center, arc[0], center, arc[-1]], _HIGHLIGHT_COLOR, 2.0)
+
     gpu.state.blend_set('NONE')
+
+
+def _draw_angle_text():
+    """회전 중 각도 숫자 (Max 처럼 기즈모 옆에 표시)."""
+    info = _state["angle"]
+    if info is None or _state["running"] != 'ROTATE' or not _gizmo_enabled():
+        return
+    context = bpy.context
+    region = context.region
+    rv3d = context.region_data
+    if region is None or rv3d is None:
+        return
+    i, deg, center = info
+    p2d = view3d_utils.location_3d_to_region_2d(region, rv3d, center)
+    if p2d is None:
+        return
+    font = 0
+    size = int(14 * context.preferences.system.ui_scale)
+    blf.size(font, size)
+    text = "{:s}  {:+.1f}°".format("XYZ"[i], deg)
+    x = p2d.x + _prefs().axis_overlay_size * 0.75
+    y = p2d.y + _prefs().axis_overlay_size * 0.75
+    blf.color(font, 0.0, 0.0, 0.0, 0.7)
+    blf.position(font, x + 1, y - 1, 0)
+    blf.draw(font, text)
+    blf.color(font, *_HIGHLIGHT_COLOR)
+    blf.position(font, x, y, 0)
+    blf.draw(font, text)
 
 
 class VIEW3D_GGT_dcc_navigation(bpy.types.GizmoGroup):
@@ -834,7 +931,7 @@ _classes = (
 # 등록
 
 def register():
-    global _draw_handle
+    global _draw_handle, _text_handle
     for cls in _classes:
         bpy.utils.register_class(cls)
     mode = _current_mode()
@@ -846,17 +943,23 @@ def register():
         _draw_handle = bpy.types.SpaceView3D.draw_handler_add(
             _draw_gizmo, (), 'WINDOW', 'POST_VIEW',
         )
+        _text_handle = bpy.types.SpaceView3D.draw_handler_add(
+            _draw_angle_text, (), 'WINDOW', 'POST_PIXEL',
+        )
         bpy.app.timers.register(_tool_gizmo_timer, first_interval=0.5, persistent=True)
 
 
 def unregister():
-    global _draw_handle
+    global _draw_handle, _text_handle
     if bpy.app.timers.is_registered(_tool_gizmo_timer):
         bpy.app.timers.unregister(_tool_gizmo_timer)
     _restore_tool_gizmos()
     if _draw_handle is not None:
         bpy.types.SpaceView3D.draw_handler_remove(_draw_handle, 'WINDOW')
         _draw_handle = None
+    if _text_handle is not None:
+        bpy.types.SpaceView3D.draw_handler_remove(_text_handle, 'WINDOW')
+        _text_handle = None
     if bpy.app.timers.is_registered(_startup_apply):
         bpy.app.timers.unregister(_startup_apply)
     _restore_conflicts()
