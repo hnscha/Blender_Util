@@ -1,0 +1,53 @@
+name: Release add-on
+
+# Push a tag named <addon_folder>-v<version>, e.g. dcc_navigation-v1.0.0.
+# The add-on folder is zipped with blender_manifest.toml at the zip root,
+# which is the layout Blender's "Install from Disk" and drag-and-drop expect.
+
+on:
+  push:
+    tags:
+      - "*-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve add-on and version from tag
+        id: meta
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          addon="${tag%-v*}"
+          version="${tag##*-v}"
+          manifest="${addon}/blender_manifest.toml"
+          if [ ! -f "$manifest" ]; then
+            echo "::error::No add-on folder '${addon}' with blender_manifest.toml for tag ${tag}"
+            exit 1
+          fi
+          manifest_version=$(grep -E '^version *=' "$manifest" | head -1 | sed -E 's/^version *= *"([^"]+)".*/\1/')
+          if [ "$manifest_version" != "$version" ]; then
+            echo "::error::Tag version ${version} does not match ${manifest} version ${manifest_version}"
+            exit 1
+          fi
+          echo "addon=${addon}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "zip=${addon}-${version}.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Build zip
+        run: |
+          cd "${{ steps.meta.outputs.addon }}"
+          zip -r "../${{ steps.meta.outputs.zip }}" . -x "__pycache__/*" "*/__pycache__/*" "*.pyc" ".*"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ steps.meta.outputs.addon }} ${{ steps.meta.outputs.version }}
+          files: ${{ steps.meta.outputs.zip }}
+          body: |
+            Install: drag `${{ steps.meta.outputs.zip }}` into the Blender window,
+            or Edit > Preferences > Get Extensions > Install from Disk.
