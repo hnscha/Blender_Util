@@ -1311,19 +1311,55 @@ def _rot_mode_path(rotation_mode):
     return "rotation_euler"
 
 
-def _apply_basis(owner, basis, start, prev_rot):
+_EPS = 1e-6
+
+
+def _rotation_blocked(owner, axis):
+    """회전 잠금 때문에 이 회전을 하면 안 되는지: 회전 채널 전부 잠김, 또는 잡은 링 축의 채널이 잠김."""
+    lock = owner.lock_rotation
+    if owner.rotation_mode == 'QUATERNION' and owner.lock_rotations_4d and not owner.lock_rotation_w:
+        return False
+    if all(lock):
+        return True
+    return axis < 3 and lock[axis]
+
+
+def _keep_or(start_v, new_v, locked):
+    """잠겼거나 사실상 안 바뀐(부동소수 오차 수준) 값은 처음 값을 그대로 쓴다."""
+    if locked or abs(new_v - start_v) < _EPS:
+        return start_v
+    return new_v
+
+
+def _apply_basis(owner, basis, start, prev_rot, keep=()):
     """
-    분해한 basis 행렬을 loc/rot/scale 채널에 넣는다. 잠긴 채널은 시작값을 유지하고,
-    오일러는 직전 값과 연속이 되게(180° 넘어도 튀지 않게) 넣는다. 넣은 회전값을 돌려준다.
+    분해한 basis 행렬을 loc/rot/scale 채널에 넣는다. 잠긴 채널과 이번 변환 종류와 관계없는 채널(keep)은
+    처음 값을 그대로 두고(이동 중 회전·스케일에 오차가 새지 않게), 오일러는 직전 값과 연속이 되게 넣는다.
+    넣은 회전값을 돌려준다.
     """
     loc, quat, scale = basis.decompose()
     start_loc, start_rot, start_scale = start
-    owner.location = [start_loc[i] if owner.lock_location[i] else loc[i] for i in range(3)]
-    owner.scale = [start_scale[i] if owner.lock_scale[i] else scale[i] for i in range(3)]
+    if 'loc' not in keep:
+        owner.location = [_keep_or(start_loc[i], loc[i], owner.lock_location[i]) for i in range(3)]
+    if 'scale' not in keep:
+        owner.scale = [_keep_or(start_scale[i], scale[i], owner.lock_scale[i]) for i in range(3)]
     mode = owner.rotation_mode
+    if 'rot' in keep:
+        return prev_rot
     if mode == 'QUATERNION':
         if quat.dot(prev_rot) < 0.0:
             quat.negate()
+        lock = owner.lock_rotation
+        if all(lock) and (not owner.lock_rotations_4d or owner.lock_rotation_w):
+            return prev_rot
+        q = [quat.w, quat.x, quat.y, quat.z]
+        s = [start_rot.w, start_rot.x, start_rot.y, start_rot.z]
+        if owner.lock_rotations_4d and owner.lock_rotation_w:
+            q[0] = s[0]
+        for i in range(3):
+            if lock[i]:
+                q[i + 1] = s[i + 1]
+        quat = Quaternion(q).normalized()
         owner.rotation_quaternion = quat
         return quat.copy()
     if mode == 'AXIS_ANGLE':
@@ -1331,7 +1367,7 @@ def _apply_basis(owner, basis, start, prev_rot):
         owner.rotation_axis_angle = (angle, axis.x, axis.y, axis.z)
         return quat.copy()
     eul = quat.to_euler(mode, prev_rot)
-    owner.rotation_euler = [start_rot[i] if owner.lock_rotation[i] else eul[i] for i in range(3)]
+    owner.rotation_euler = [_keep_or(start_rot[i], eul[i], owner.lock_rotation[i]) for i in range(3)]
     return owner.rotation_euler.copy()
 
 
@@ -1385,9 +1421,14 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
 
             for o in context.selected_objects:
                 if not has_selected_parent(o):
+                    world = o.matrix_world.copy()
+                    basis = o.matrix_basis.copy()
                     self.objects.append({
                         "obj": o,
-                        "world": o.matrix_world.copy(),
+                        "world": world,
+                        "basis": basis,
+                        # 부모·컨스트레인트를 합친 '실제 부모' 행렬 (world = peff @ basis).
+                        "peff": world @ basis.inverted_safe(),
                         "start": (o.location.copy(), _rot_value(o), o.scale.copy()),
                         "prev": _rot_value(o),
                     })
@@ -1405,10 +1446,15 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
             for pb in sel:
                 if not has_selected_parent(pb):
                     arm = pb.id_data
+                    world = arm.matrix_world @ pb.matrix
+                    basis = pb.matrix_basis.copy()
                     self.bones.append({
                         "pb": pb,
                         "arm": arm,
-                        "world": arm.matrix_world @ pb.matrix,
+                        "world": world,
+                        "basis": basis,
+                        # 부모·컨스트레인트(Rigify 부모 전환 등)를 합친 '실제 부모' 행렬 (world = peff @ basis).
+                        "peff": world @ basis.inverted_safe(),
                         "start": (pb.location.copy(), _rot_value(pb), pb.scale.copy()),
                         "prev": _rot_value(pb),
                     })
@@ -1437,19 +1483,23 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
 
     def _apply(self, context, delta):
         # delta 는 공통 행렬, 또는 대상마다 행렬을 돌려주는 함수(개별 원점 피봇).
+        # 월드에서의 변화(d)를 '실제 부모' 기준으로 바꿔 채널(basis)에 곱한다:
+        #   새 basis = peff⁻¹ · d · peff · 처음 basis
+        # 결과 월드 행렬을 다시 채널로 역산하지 않으므로, 컨스트레인트가 걸린 컨트롤러(Rigify IK 등)에서도
+        # 잠긴 채널·바뀌지 않아야 할 채널에 미세한 오차가 새어 들어가지 않는다.
         per_item = callable(delta)
-        for item in self.objects:
-            o = item["obj"]
+        # 이동은 회전·스케일을, 회전은 스케일을, 스케일은 회전을 건드리지 않는다 (Blender 변환과 같음).
+        keep = {'MOVE': ('rot', 'scale'), 'ROTATE': ('scale',), 'SCALE': ('rot',)}[self.kind]
+        for item in self.objects + self.bones:
+            owner = item["obj"] if "obj" in item else item["pb"]
+            if self.kind == 'ROTATE' and _rotation_blocked(owner, self.axis):
+                # 잠긴 축의 링을 돌리면 아예 돌지 않는다 (Max 와 같음). 그냥 돌린 뒤 잠긴 채널만 되돌리면
+                # 그 회전이 잠기지 않은 다른 채널로 새어 들어가 컨트롤러가 미묘하게 움직인다.
+                continue
             d = delta(item) if per_item else delta
-            o.matrix_world = d @ item["world"]
-            item["prev"] = _apply_basis(o, o.matrix_basis.copy(), item["start"], item["prev"])
-        for item in self.bones:
-            pb = item["pb"]
-            arm = item["arm"]
-            d = delta(item) if per_item else delta
-            pose_m = arm.matrix_world.inverted() @ d @ item["world"]
-            basis = arm.convert_space(pose_bone=pb, matrix=pose_m, from_space='POSE', to_space='LOCAL')
-            item["prev"] = _apply_basis(pb, basis, item["start"], item["prev"])
+            peff = item["peff"]
+            basis = peff.inverted_safe() @ d @ peff @ item["basis"]
+            item["prev"] = _apply_basis(owner, basis, item["start"], item["prev"], keep)
         if self.verts is not None:
             m = self.verts["imw"] @ delta
             for v, co in self.verts["items"]:
