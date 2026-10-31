@@ -553,7 +553,11 @@ def _transform_running(context):
         kind = _op_kind(op)
         if kind is not None:
             if not _last_seen or _last_seen[-1][2] != kind:
-                _last_seen.append((time.time(), [o.bl_idname for o in ops], kind))
+                names = []
+                for o in ops:
+                    part = getattr(o.properties, "axis", None) if o.bl_idname == "DCCNAV_OT_gizmo_transform" else None
+                    names.append(o.bl_idname if part is None else "{:s}[{}]".format(o.bl_idname, part))
+                _last_seen.append((time.time(), names, kind))
                 del _last_seen[:-20]
             return kind
     return None
@@ -1464,39 +1468,50 @@ def _dist_point_segment(p, a, b):
     return (p - (a + ab * t)).length
 
 
-def _trackball_hit(context, location):
+def _rotate_pick(context, location):
     """
-    회전 링 안쪽(자유 회전) 영역인지. X/Y/Z 링 근처는 링이 잡히도록 제외한다.
-    (링을 옆에서 보면 가운데를 지나는 선이 되므로, 화면에 그려진 링 선 기준으로 판단한다.)
+    회전 기즈모에서 마우스가 가리키는 부분: 0~2 = X/Y/Z 링, H_VIEW_RING = 흰 바깥 링,
+    H_TRACKBALL = 링 안쪽(자유 회전), None = 없음.
+    화면에 그려진 링 선까지 거리로 직접 판정한다. 링이 겹치면 더 가까운 링, 같으면 앞쪽(보는 쪽) 반원을 고른다.
     """
     frame = _gizmo_frame(context)
     if frame is None:
-        return False
+        return None
     center, rot, length = frame
     region = context.region
     rv3d = context.region_data
     c2d = view3d_utils.location_3d_to_region_2d(region, rv3d, center)
     if c2d is None:
-        return False
+        return None
     mouse = Vector(location)
     size = _prefs().axis_overlay_size
-    if (mouse - c2d).length > size * _TRACKBALL_RADIUS:
-        return False
     tol = 10.0 * context.preferences.system.ui_scale
-    segs = 48
+    toward = rv3d.view_rotation @ Vector((0.0, 0.0, 1.0))
+    segs = 64
+    best = None
     for i in range(3):
         side, up, _axis = _axis_basis(rot, i)
-        pts = []
-        for s in range(segs):
+        prev = None
+        for s in range(segs + 1):
             t = s / segs * 2.0 * math.pi
-            p = view3d_utils.location_3d_to_region_2d(
-                region, rv3d, center + (side * math.cos(t) + up * math.sin(t)) * length)
-            if p is not None:
-                pts.append(p)
-        for s in range(len(pts)):
-            if _dist_point_segment(mouse, pts[s], pts[(s + 1) % len(pts)]) < tol:
-                return False
-    return True
+            w = center + (side * math.cos(t) + up * math.sin(t)) * length
+            p = view3d_utils.location_3d_to_region_2d(region, rv3d, w)
+            if p is not None and prev is not None:
+                d = _dist_point_segment(mouse, prev, p)
+                if d < tol:
+                    back = (w - center).dot(toward) < 0.0
+                    score = d + (4.0 if back else 0.0)
+                    if best is None or score < best[0]:
+                        best = (score, i)
+            prev = p
+    if best is not None:
+        return best[1]
+    r = (mouse - c2d).length
+    if abs(r - size * _VIEW_RING_RADIUS) < tol:
+        return H_VIEW_RING
+    if r <= size * _TRACKBALL_RADIUS:
+        return H_TRACKBALL
+    return None
 
 
 def _center_hit(context, location):
@@ -1522,15 +1537,26 @@ class DCCNAV_GT_center_area(bpy.types.Gizmo):
         return 0 if _center_hit(context, location) else -1
 
 
-class DCCNAV_GT_trackball_area(bpy.types.Gizmo):
-    """회전 링 안쪽을 잡는 영역. 직접 판정해서 X/Y/Z 링이 항상 먼저 잡히게 한다. 그리기는 _draw_gizmo 가 한다."""
-    bl_idname = "DCCNAV_GT_trackball_area"
-
-    def draw(self, _context):
-        pass
+def _make_rotate_part_gizmo(part):
+    """회전 기즈모의 한 부분(_rotate_pick 결과가 part 일 때만 잡힘)을 잡는 영역 기즈모 클래스."""
 
     def test_select(self, context, location):
-        return 0 if _trackball_hit(context, location) else -1
+        return 0 if _rotate_pick(context, location) == part else -1
+
+    return type(
+        "DCCNAV_GT_rotate_part{:d}".format(part),
+        (bpy.types.Gizmo,),
+        {
+            "__doc__": "DCC 회전 기즈모 잡는 영역 (부분 {:d})".format(part),
+            "bl_idname": "DCCNAV_GT_rotate_part{:d}".format(part),
+            "draw": lambda self, _context: None,
+            "test_select": test_select,
+        },
+    )
+
+
+# 0~2 = X/Y/Z 링, 3 = 흰 바깥 링, 4 = 링 안쪽(자유 회전). 모두 같은 판정(_rotate_pick)을 써서 서로 겹치지 않는다.
+_ROTATE_PART_GIZMOS = tuple(_make_rotate_part_gizmo(p) for p in range(5))
 
 
 class VIEW3D_GGT_dcc_navigation(bpy.types.GizmoGroup):
@@ -1564,9 +1590,7 @@ class VIEW3D_GGT_dcc_navigation(bpy.types.GizmoGroup):
             'MOVE': [new("GIZMO_GT_arrow_3d", draw_style='NORMAL') for _ in range(3)]
             + [new("DCCNAV_GT_center_area")]
             + [new("GIZMO_GT_primitive_3d", draw_style='PLANE') for _ in range(3)],
-            'ROTATE': [new("GIZMO_GT_dial_3d") for _ in range(3)]
-            + [new("GIZMO_GT_dial_3d")]
-            + [new("DCCNAV_GT_trackball_area")],
+            'ROTATE': [new(cls.bl_idname) for cls in _ROTATE_PART_GIZMOS],
             'SCALE': [new("GIZMO_GT_arrow_3d", draw_style='BOX') for _ in range(3)]
             + [new("DCCNAV_GT_center_area")]
             + [new("GIZMO_GT_primitive_3d", draw_style='PLANE') for _ in range(3)],
@@ -1714,7 +1738,7 @@ _classes = (
     VIEW3D_PT_dcc_navigation,
     DCCNAV_OT_gizmo_transform,
     DCCNAV_GT_center_area,
-    DCCNAV_GT_trackball_area,
+    *_ROTATE_PART_GIZMOS,
     VIEW3D_GGT_dcc_navigation,
 )
 
