@@ -333,32 +333,43 @@ def _update_gizmo_pref(_self, _context):
 
 
 def _draw_mode_ui(layout, prefs):
-    layout.label(text="Viewport Navigation")
+    # UI 는 영어 고정: Blender 인터페이스 번역(예: 한국어)을 적용하지 않는다 (translate=False).
+    layout.label(text="Viewport Navigation", translate=False)
     col = layout.column(align=True)
-    col.prop(prefs, "nav_mode", expand=True)
+    # 열거형 버튼 이름은 expand 로 그리면 Blender 가 번역해 버려서, 버튼을 하나씩 영어 이름으로 그린다.
+    for ident, label, _desc in _MODE_ITEMS:
+        col.prop_enum(prefs, "nav_mode", ident, text=label, translate=False)
     box = layout.box()
     col = box.column(align=True)
     for line in _MODE_HELP[prefs.nav_mode]:
-        col.label(text=line)
+        col.label(text=line, translate=False)
 
     layout.separator()
-    layout.prop(prefs, "use_hotkeys")
+    layout.prop(prefs, "use_hotkeys", translate=False)
     box = layout.box()
     box.active = prefs.use_hotkeys
     col = box.column(align=True)
     for line in _HOTKEY_HELP:
-        col.label(text=line)
+        col.label(text=line, translate=False)
 
     layout.separator()
-    layout.prop(prefs, "show_axis_overlay")
+    layout.prop(prefs, "show_axis_overlay", translate=False)
     col = layout.column()
     col.active = prefs.show_axis_overlay
-    col.prop(prefs, "scale_sensitivity", slider=True)
-    col.prop(prefs, "use_own_transform")
+    col.prop(prefs, "scale_sensitivity", slider=True, translate=False)
+    col.separator()
+    col.label(text="Work Mode", translate=False)
+    row = col.row(align=True)
+    row.prop_enum(prefs, "work_mode", 'ANIMATION', text="Animation", translate=False)
+    row.prop_enum(prefs, "work_mode", 'RIGGING', text="Rigging", translate=False)
     sub = col.column(align=True)
-    sub.active = prefs.use_own_transform and prefs.nav_mode != 'BLENDER'
-    sub.label(text="Object/Pose: no constraint lines")
-    sub.label(text="Edit mode, G/R/S: Blender")
+    if prefs.work_mode == 'ANIMATION':
+        sub.active = prefs.nav_mode != 'BLENDER'
+        sub.label(text="Object/Pose: no constraint lines", translate=False)
+        sub.label(text="Edit mode, G/R/S: Blender", translate=False)
+    else:
+        sub.label(text="Blender transform everywhere", translate=False)
+        sub.label(text="Snap, numeric input, Auto IK", translate=False)
 
 
 class DCCNavigationPreferences(bpy.types.AddonPreferences):
@@ -392,13 +403,16 @@ class DCCNavigationPreferences(bpy.types.AddonPreferences):
         min=20,
         max=400,
     )
-    use_own_transform: bpy.props.BoolProperty(
-        name="Direct Transform (No Lines)",
-        description=(
-            "In Maya/Max mode, gizmo drags are computed by the add-on so Blender's constraint lines are not drawn.\n"
-            "Object and Pose mode only. Turn off to use Blender's transform (numeric input, snapping, proportional editing)"
+    work_mode: bpy.props.EnumProperty(
+        name="Work Mode",
+        description="How gizmo drags are computed",
+        items=(
+            ('ANIMATION', "Animation",
+             "Object/Pose mode: the add-on computes gizmo drags, no constraint lines (Maya/Max mode only)"),
+            ('RIGGING', "Rigging",
+             "Blender's transform everywhere: snapping, numeric input, Auto IK, mirror (constraint lines shown)"),
         ),
-        default=True,
+        default='ANIMATION',
     )
     scale_sensitivity: bpy.props.FloatProperty(
         name="Scale Sensitivity",
@@ -419,25 +433,25 @@ class DCCNavigationPreferences(bpy.types.AddonPreferences):
         if self.nav_mode == 'MAYA' and inputs.use_mouse_emulate_3_button:
             box = layout.box()
             box.alert = True
-            box.label(text="Emulate 3 Button Mouse is on and conflicts with Alt+Left drag.", icon='ERROR')
-            box.prop(inputs, "use_mouse_emulate_3_button")
+            box.label(text="Emulate 3 Button Mouse is on and conflicts with Alt+Left drag.", icon='ERROR', translate=False)
+            box.prop(inputs, "use_mouse_emulate_3_button", translate=False)
 
         row = layout.row()
         row.active = self.show_axis_overlay
-        row.prop(self, "axis_overlay_size")
+        row.prop(self, "axis_overlay_size", translate=False)
 
         box = layout.box()
-        box.label(text="Blender Navigation Options (optional)")
-        box.prop(inputs, "use_zoom_to_mouse")
-        box.prop(inputs, "use_rotate_around_active")
+        box.label(text="Blender Navigation Options (optional)", translate=False)
+        box.prop(inputs, "use_zoom_to_mouse", translate=False)
+        box.prop(inputs, "use_rotate_around_active", translate=False)
 
         disabled = _conflict_items(_mode_combos(self.nav_mode, self.use_hotkeys), active_only=False)
         if disabled:
             box = layout.box()
-            box.label(text="Disabled conflicting default shortcuts ({:d})".format(len(disabled)))
+            box.label(text="Disabled conflicting default shortcuts ({:d})".format(len(disabled)), translate=False)
             col = box.column(align=True)
             for km, kmi in disabled:
-                col.label(text="{:s} : {:s}  ({:s})".format(km.name, _key_text(kmi), kmi.name or kmi.idname))
+                col.label(text="{:s} : {:s}  ({:s})".format(km.name, _key_text(kmi), kmi.name or kmi.idname), translate=False)
 
 
 class VIEW3D_PT_dcc_navigation(bpy.types.Panel):
@@ -978,11 +992,12 @@ def _draw_angle_text():
 
 def _own_transform_on():
     """
-    기즈모 드래그를 애드온 자체 변환으로 할지. Maya/Max 모드 + 설정 켬 + 오브젝트·포즈 모드일 때만.
-    에디트 모드는 숫자 입력·정점 스냅·비례 편집·미러 같은 Blender 변환 기능이 필요해서 Blender 변환을 쓴다.
+    기즈모 드래그를 애드온 자체 변환으로 할지. Maya/Max 모드 + 작업 모드 Animation + 오브젝트·포즈 모드일 때만.
+    에디트 모드와 Rigging 작업 모드는 숫자 입력·스냅·비례 편집·미러·Auto IK 같은 Blender 변환 기능이 필요해서
+    Blender 변환을 쓴다.
     """
     prefs = _prefs()
-    if prefs is None or not prefs.use_own_transform or prefs.nav_mode not in {'MAYA', 'MAX'}:
+    if prefs is None or prefs.work_mode != 'ANIMATION' or prefs.nav_mode not in {'MAYA', 'MAX'}:
         return False
     return bpy.context.mode in {'OBJECT', 'POSE'}
 
