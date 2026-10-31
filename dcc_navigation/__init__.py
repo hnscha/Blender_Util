@@ -635,6 +635,9 @@ _PLANE_SIZE = 0.09
 _VIEW_RING_RADIUS = 1.2
 _TRACKBALL_RADIUS = 0.95
 _PIVOT_AXIS_SIZE = 0.3     # 회전 기즈모 가운데 작은 축 표시 길이
+_MOVE_PLANE_SIZE = 0.35    # 이동 평면 꺾쇠 크기 (Max)
+_SCALE_INNER = 0.4         # 스케일 가운데 삼각형 크기 (Max)
+_SCALE_OUTER = 0.62        # 스케일 사다리꼴 바깥 변 (Max)
 
 # 마우스가 올라간 축 (GizmoGroup 이 갱신), 변환을 시작할 때 잡은 축.
 _state = {
@@ -942,8 +945,32 @@ def _rotation_progress(context, hot):
     return i, a, theta
 
 
+def _move_plane_quad(center, rot, length, n):
+    """이동 평면 핸들(법선 n 축)의 꺾쇠 세 점 (u 끝, 모서리, v 끝)과 잡는 영역 사각형."""
+    u = rot.col[(n + 1) % 3].normalized()
+    v = rot.col[(n + 2) % 3].normalized()
+    s = length * _MOVE_PLANE_SIZE
+    pu, pc, pv = center + u * s, center + (u + v) * s, center + v * s
+    return pu, pc, pv, [center, pu, pc, pv]
+
+
+def _scale_center_tri(center, rot, length):
+    """스케일 가운데 삼각형 (세 축 위의 점을 잇는다) = 전체 스케일."""
+    a = length * _SCALE_INNER
+    return [center + rot.col[i].normalized() * a for i in range(3)]
+
+
+def _scale_plane_quad(center, rot, length, n):
+    """스케일 평면 핸들(법선 n 축) 사다리꼴: 안쪽 변(가운데 삼각형 쪽)과 바깥 변."""
+    u = rot.col[(n + 1) % 3].normalized()
+    v = rot.col[(n + 2) % 3].normalized()
+    a, b = length * _SCALE_INNER, length * _SCALE_OUTER
+    return [center + u * a, center + u * b, center + v * b, center + v * a]
+
+
 def _draw_gizmo():
     context = bpy.context
+    _state["labels"] = []
     if not _gizmo_enabled() or not _custom_gizmo_here(context):
         return
     kind = _current_kind(context)
@@ -993,7 +1020,8 @@ def _draw_gizmo():
 
     toward = rv3d.view_rotation @ Vector((0.0, 0.0, 1.0))
 
-    # 기본 기즈모와 같은 모양: 이동 = 화살표, 회전 = 축별 링, 스케일 = 끝이 네모인 축.
+    # 3ds Max 기즈모 모양: 이동 = 화살표 + 모서리 꺾쇠 평면, 회전 = 축별 링, 스케일 = 축 + 사다리꼴·가운데 삼각형.
+    labels = []
     for i in range(3):
         scaling = factors is not None and abs(factors[i] - 1.0) > 1e-3
         color = _HIGHLIGHT_COLOR if hot == i or scaling else _AXIS_COLORS[i]
@@ -1027,17 +1055,14 @@ def _draw_gizmo():
                 lines([center, ghost], _AXIS_COLORS[i][:3] + (0.35,), 1.5)
         tip = center + axis * axis_len
         lines([center, tip], color, width)
+        # Max 처럼 축 끝에 X/Y/Z 글자.
+        labels.append(("XYZ"[i], tip + axis * (length * 0.12), color))
 
-        if kind == 'SCALE':
-            h = length * 0.06
-            corners = [tip + (side * sx + up * sy + axis * sz) * h
-                       for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)]
-            faces = ((0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3))
-            tris([corners[j] for f in faces for j in (f[0], f[1], f[2], f[0], f[2], f[3])], color)
-        else:
+        if kind == 'MOVE':
             base = tip - axis * (length * 0.18)
             ring = circle(base, side, up, length * 0.06, segs=12)
             tris([p for s in range(12) for p in (tip, ring[s], ring[(s + 1) % 12])], color)
+    _state["labels"] = labels
 
     view_x = rv3d.view_rotation @ Vector((1.0, 0.0, 0.0))
     view_y = rv3d.view_rotation @ Vector((0.0, 1.0, 0.0))
@@ -1055,36 +1080,32 @@ def _draw_gizmo():
         if hot == H_CENTER:
             tris(quad_tris(sq), (1.0, 1.0, 1.0, 0.25))
         lines(loop(sq), _HIGHLIGHT_COLOR if hot == H_CENTER else white, 2.0)
-        # 평면 핸들 = 두 축 평면에서 이동 (Max 의 XY/YZ/XZ 사각형). 색은 법선 축 색.
+        # 평면 핸들 = Max 의 모서리 꺾쇠 (두 축 사이 'ㄱ' 모양). 각 변은 나란한 축 색, 마우스를 올리면 노랗게 채운다.
         for n in range(3):
             if _plane_edge_on(rot.col[n], toward) and hot != H_PLANE + n:
                 continue
-            u = rot.col[(n + 1) % 3].normalized()
-            v = rot.col[(n + 2) % 3].normalized()
-            pos = center + (u + v) * (length * _PLANE_OFFSET)
-            q = square(pos, u, v, length * _PLANE_SIZE)
+            u_i, v_i = (n + 1) % 3, (n + 2) % 3
+            pu, pc, pv, _q = _move_plane_quad(center, rot, length, n)
             h = hot == H_PLANE + n
-            tris(quad_tris(q), _HIGHLIGHT_COLOR[:3] + (0.6,) if h else _AXIS_COLORS[n][:3] + (0.35,))
-            lines(loop(q), _HIGHLIGHT_COLOR if h else _AXIS_COLORS[n], 1.5)
+            if h:
+                tris(quad_tris([center, pu, pc, pv]), _HIGHLIGHT_COLOR[:3] + (0.35,))
+            lines([pu, pc], _HIGHLIGHT_COLOR if h else _AXIS_COLORS[v_i], 2.0)
+            lines([pc, pv], _HIGHLIGHT_COLOR if h else _AXIS_COLORS[u_i], 2.0)
 
     if kind == 'SCALE':
-        # 가운데 원 = 전체(균일) 스케일.
-        ring = circle(center, view_x, view_y, length * _CENTER_SIZE)
+        # Max 스케일: 가운데 삼각형 = 전체(균일), 바깥 사다리꼴 = 두 축 평면. 마우스를 올리면 노랗게 채운다.
+        tri = _scale_center_tri(center, rot, length)
         if hot == H_CENTER:
-            tris([p for s in range(len(ring)) for p in (center, ring[s], ring[(s + 1) % len(ring)])],
-                 (1.0, 1.0, 1.0, 0.25))
-        lines(loop(ring), _HIGHLIGHT_COLOR if hot == H_CENTER else white, 2.0)
-        # 평면 핸들 = 두 축 같이 스케일 (Max 의 평면 스케일). 색은 고정되는 법선 축 색.
+            tris(tri, _HIGHLIGHT_COLOR[:3] + (0.35,))
+        lines(loop(tri), _HIGHLIGHT_COLOR if hot == H_CENTER else (0.85, 0.85, 0.85, 0.9), 1.5)
         for n in range(3):
             if _plane_edge_on(rot.col[n], toward) and hot != H_PLANE + n:
                 continue
-            u = rot.col[(n + 1) % 3].normalized()
-            v = rot.col[(n + 2) % 3].normalized()
-            pos = center + (u + v) * (length * _PLANE_OFFSET)
-            q = square(pos, u, v, length * _PLANE_SIZE)
+            q = _scale_plane_quad(center, rot, length, n)
             h = hot == H_PLANE + n
-            tris(quad_tris(q), _HIGHLIGHT_COLOR[:3] + (0.6,) if h else _AXIS_COLORS[n][:3] + (0.35,))
-            lines(loop(q), _HIGHLIGHT_COLOR if h else _AXIS_COLORS[n], 1.5)
+            if h:
+                tris(quad_tris(q), _HIGHLIGHT_COLOR[:3] + (0.35,))
+            lines([q[1], q[2]], _HIGHLIGHT_COLOR if h else (0.85, 0.85, 0.85, 0.9), 1.5)
 
     if kind == 'ROTATE':
         # 맥스처럼 피봇 위치에 작은 X/Y/Z 축 표시 (현재 좌표계 기준, 회전 중에도 따라 돈다).
@@ -1146,9 +1167,26 @@ def _draw_gizmo():
 
 
 def _draw_angle_text():
-    """회전 중 각도, 스케일 중 배율 숫자 (Max 처럼 기즈모 옆에 표시)."""
+    """회전 중 각도, 스케일 중 배율 숫자, 축 끝 X/Y/Z 글자 (Max 처럼)."""
     if not _gizmo_enabled():
         return
+    context = bpy.context
+    region = context.region
+    rv3d = context.region_data
+    if region is None or rv3d is None:
+        return
+    font = 0
+    labels = _state.get("labels") or []
+    if labels:
+        blf.size(font, int(13 * context.preferences.system.ui_scale))
+        for letter, pos, color in labels:
+            p = view3d_utils.location_3d_to_region_2d(region, rv3d, pos)
+            if p is None:
+                continue
+            w, h = blf.dimensions(font, letter)
+            blf.color(font, *color)
+            blf.position(font, p.x - w * 0.5, p.y - h * 0.5, 0)
+            blf.draw(font, letter)
     running = _state["running"]
     if running == 'ROTATE' and _state["angle"] is not None:
         i, deg, center = _state["angle"]
@@ -1626,10 +1664,10 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
         rot = _orientation_matrix(context)
         region = context.region
         rv3d = context.region_data
-        # 회전 기즈모는 누른 순간(PRESS) 시작된다. Blender 가 고른 부분과 우리 판정이 어긋나는 일이 없도록
-        # 누른 위치를 같은 판정(_rotate_pick)으로 다시 확인해서 그 부분을 쓴다.
-        if self.kind == 'ROTATE':
-            part = _rotate_pick(context, (event.mouse_region_x, event.mouse_region_y))
+        # 기즈모는 누른 순간(PRESS) 시작된다. Blender 가 고른 부분과 우리 판정이 어긋나는 일이 없도록
+        # 누른 위치를 같은 판정(_move_pick / _rotate_pick / _scale_pick)으로 다시 확인해서 그 부분을 쓴다.
+        if self.kind in _PICKERS:
+            part = _PICKERS[self.kind](context, (event.mouse_region_x, event.mouse_region_y))
             _debug_invoke.clear()
             _debug_invoke.update({"given_axis": self.axis, "pick": part,
                                   "mouse": (event.mouse_region_x, event.mouse_region_y)})
@@ -1817,49 +1855,134 @@ def _rotate_pick(context, location):
     return None
 
 
-def _center_hit(context, location):
-    """기즈모 가운데 핸들(이동 사각형 / 스케일 원) 영역인지. 화살표 줄기보다 먼저 잡히게 직접 판정한다."""
+def _poly_contains(poly, p):
+    """화면 좌표 볼록 다각형 안에 점이 있는지."""
+    sign = 0.0
+    n = len(poly)
+    for k in range(n):
+        a, b = poly[k], poly[(k + 1) % n]
+        cr = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)
+        if abs(cr) < 1e-9:
+            continue
+        if sign == 0.0:
+            sign = cr
+        elif (cr > 0.0) != (sign > 0.0):
+            return False
+    return True
+
+
+def _pick_setup(context, location):
     frame = _gizmo_frame(context)
     if frame is None:
-        return False
-    c2d = view3d_utils.location_3d_to_region_2d(context.region, context.region_data, frame[0])
-    if c2d is None:
-        return False
-    radius = max(_prefs().axis_overlay_size * _CENTER_SIZE * 1.4, 10.0 * context.preferences.system.ui_scale)
-    return (Vector(location) - c2d).length <= radius
+        return None
+    region, rv3d = context.region, context.region_data
+    c2 = view3d_utils.location_3d_to_region_2d(region, rv3d, frame[0])
+    if c2 is None:
+        return None
+
+    def proj(w):
+        return view3d_utils.location_3d_to_region_2d(region, rv3d, w)
+
+    toward = rv3d.view_rotation @ Vector((0.0, 0.0, 1.0))
+    tol = 8.0 * context.preferences.system.ui_scale
+    return frame, c2, proj, toward, Vector(location), tol
 
 
-class DCCNAV_GT_center_area(bpy.types.Gizmo):
-    """기즈모 가운데(이동 = 화면 평면 자유 이동, 스케일 = 전체 스케일)를 잡는 영역. 그리기는 _draw_gizmo 가 한다."""
-    bl_idname = "DCCNAV_GT_center_area"
+def _pick_axis(frame, c2, proj, toward, mouse, tol, start=0.0):
+    """화면에 그려진 축 선(start~끝)에 가장 가까운 축. 화면을 향한 축은 제외."""
+    center, rot, length = frame
+    best = None
+    for i in range(3):
+        axis = rot.col[i].normalized()
+        if _axis_facing_view(axis, toward):
+            continue
+        a = proj(center + axis * (length * start)) if start > 0.0 else c2
+        b = proj(center + axis * length * 1.1)
+        if a is None or b is None:
+            continue
+        d = _dist_point_segment(mouse, a, b)
+        if d < tol and (best is None or d < best[0]):
+            best = (d, i)
+    return best[1] if best else None
 
-    def draw(self, _context):
-        pass
+
+def _pick_plane(frame, proj, toward, mouse, quad_fn):
+    """평면 핸들 영역 안인지. 여러 개면 화면을 가장 정면으로 향한 평면."""
+    center, rot, length = frame
+    best = None
+    for n in range(3):
+        if _plane_edge_on(rot.col[n], toward):
+            continue
+        poly = [proj(w) for w in quad_fn(center, rot, length, n)]
+        if any(p is None for p in poly) or not _poly_contains(poly, mouse):
+            continue
+        facing = abs(rot.col[n].normalized().dot(toward))
+        if best is None or facing > best[0]:
+            best = (facing, H_PLANE + n)
+    return best[1] if best else None
+
+
+def _move_pick(context, location):
+    """이동 기즈모(Max 방식)에서 마우스가 가리키는 부분: 가운데 사각형 > 축 > 평면 꺾쇠."""
+    s = _pick_setup(context, location)
+    if s is None:
+        return None
+    frame, c2, proj, toward, mouse, tol = s
+    half = _prefs().axis_overlay_size * _CENTER_SIZE + 2.0
+    if abs(mouse.x - c2.x) <= half and abs(mouse.y - c2.y) <= half:
+        return H_CENTER
+    axis = _pick_axis(frame, c2, proj, toward, mouse, tol, start=_CENTER_SIZE)
+    if axis is not None:
+        return axis
+    return _pick_plane(frame, proj, toward, mouse, lambda c, r, l, n: _move_plane_quad(c, r, l, n)[3])
+
+
+def _scale_pick(context, location):
+    """스케일 기즈모(Max 방식): 축 바깥쪽 > 가운데 삼각형(전체) > 사다리꼴(두 축)."""
+    s = _pick_setup(context, location)
+    if s is None:
+        return None
+    frame, c2, proj, toward, mouse, tol = s
+    axis = _pick_axis(frame, c2, proj, toward, mouse, tol, start=_SCALE_OUTER)
+    if axis is not None:
+        return axis
+    center, rot, length = frame
+    tri = [proj(w) for w in _scale_center_tri(center, rot, length)]
+    if all(p is not None for p in tri) and _poly_contains(tri, mouse):
+        return H_CENTER
+    return _pick_plane(frame, proj, toward, mouse, _scale_plane_quad)
+
+
+_PICKERS = {'MOVE': _move_pick, 'ROTATE': _rotate_pick, 'SCALE': _scale_pick}
+
+
+def _make_part_gizmo(kind, part):
+    """기즈모의 한 부분(판정 결과가 part 일 때만 잡힘)을 잡는 영역 기즈모 클래스. 그리기는 _draw_gizmo 가 한다."""
+    pick = _PICKERS[kind]
 
     def test_select(self, context, location):
-        return 0 if _center_hit(context, location) else -1
+        return 0 if pick(context, location) == part else -1
 
-
-def _make_rotate_part_gizmo(part):
-    """회전 기즈모의 한 부분(_rotate_pick 결과가 part 일 때만 잡힘)을 잡는 영역 기즈모 클래스."""
-
-    def test_select(self, context, location):
-        return 0 if _rotate_pick(context, location) == part else -1
-
+    name = "DCCNAV_GT_{:s}_part{:d}".format(kind.lower(), part)
     return type(
-        "DCCNAV_GT_rotate_part{:d}".format(part),
+        name,
         (bpy.types.Gizmo,),
         {
-            "__doc__": "DCC rotate gizmo hit area (part {:d})".format(part),
-            "bl_idname": "DCCNAV_GT_rotate_part{:d}".format(part),
+            "__doc__": "DCC {:s} gizmo hit area (part {:d})".format(kind.lower(), part),
+            "bl_idname": name,
             "draw": lambda self, _context: None,
             "test_select": test_select,
         },
     )
 
 
-# 0~2 = X/Y/Z 링, 3 = 흰 바깥 링, 4 = 링 안쪽(자유 회전). 모두 같은 판정(_rotate_pick)을 써서 서로 겹치지 않는다.
-_ROTATE_PART_GIZMOS = tuple(_make_rotate_part_gizmo(p) for p in range(5))
+# 부분 번호 = 연산자 axis 번호. 같은 종류 안에서는 같은 판정을 써서 서로 겹치지 않는다.
+#   이동: 0~2 축, 3 가운데(화면 평면), 4~6 평면 꺾쇠
+#   회전: 0~2 링, 3 흰 바깥 링, 4 링 안쪽(자유 회전)
+#   스케일: 0~2 축, 3 가운데 삼각형(전체), 4~6 사다리꼴(두 축)
+_PART_COUNTS = {'MOVE': 7, 'ROTATE': 5, 'SCALE': 7}
+_PART_GIZMOS = {kind: tuple(_make_part_gizmo(kind, p) for p in range(count))
+                for kind, count in _PART_COUNTS.items()}
 
 
 class VIEW3D_GGT_dcc_navigation(bpy.types.GizmoGroup):
@@ -1889,15 +2012,9 @@ class VIEW3D_GGT_dcc_navigation(bpy.types.GizmoGroup):
             return gz
 
         # 각 목록의 번호 = 연산자 axis 번호 (0~2 축, 3 이후 핸들).
-        self.handles = {
-            'MOVE': [new("GIZMO_GT_arrow_3d", draw_style='NORMAL') for _ in range(3)]
-            + [new("DCCNAV_GT_center_area")]
-            + [new("GIZMO_GT_primitive_3d", draw_style='PLANE') for _ in range(3)],
-            'ROTATE': [new(cls.bl_idname) for cls in _ROTATE_PART_GIZMOS],
-            'SCALE': [new("GIZMO_GT_arrow_3d", draw_style='BOX') for _ in range(3)]
-            + [new("DCCNAV_GT_center_area")]
-            + [new("GIZMO_GT_primitive_3d", draw_style='PLANE') for _ in range(3)],
-        }
+        # 모든 부분을 직접 판정하는 영역 기즈모로 만든다 (Max 모양과 잡는 영역이 정확히 같게).
+        self.handles = {kind: [new(cls.bl_idname) for cls in classes]
+                        for kind, classes in _PART_GIZMOS.items()}
         self.bound = None
 
     def _bind(self, orient, own):
@@ -2048,8 +2165,9 @@ _classes = (
     DCCNAV_OT_apply_mode,
     VIEW3D_PT_dcc_navigation,
     DCCNAV_OT_gizmo_transform,
-    DCCNAV_GT_center_area,
-    *_ROTATE_PART_GIZMOS,
+    *_PART_GIZMOS['MOVE'],
+    *_PART_GIZMOS['ROTATE'],
+    *_PART_GIZMOS['SCALE'],
     VIEW3D_GGT_dcc_navigation,
 )
 
