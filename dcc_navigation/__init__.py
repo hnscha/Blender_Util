@@ -364,11 +364,10 @@ def _draw_mode_ui(layout, prefs):
     row.prop_enum(prefs, "work_mode", 'RIGGING', text="Rigging", translate=False)
     sub = col.column(align=True)
     if prefs.work_mode == 'ANIMATION':
-        sub.active = prefs.nav_mode != 'BLENDER'
-        sub.label(text="Object/Pose: no constraint lines", translate=False)
-        sub.label(text="Edit mode, G/R/S: Blender", translate=False)
+        sub.label(text="Object/Pose: custom gizmo", translate=False)
+        sub.label(text="Edit mode (modeling): Blender gizmo", translate=False)
     else:
-        sub.label(text="Blender transform everywhere", translate=False)
+        sub.label(text="Blender gizmo everywhere", translate=False)
         sub.label(text="Snap, numeric input, Auto IK", translate=False)
 
 
@@ -519,8 +518,18 @@ def _gizmo_enabled():
     return prefs is not None and prefs.show_axis_overlay
 
 
+def _custom_gizmo_here(context):
+    """
+    여기서 DCC 기즈모를 쓸지. 애니메이션 작업(Work Mode = Animation)의 오브젝트·포즈 모드만.
+    모델링(에디트 모드)과 리깅(Work Mode = Rigging)은 Blender 기본 기즈모·변환을 그대로 쓴다.
+    """
+    prefs = _prefs()
+    return (prefs is not None and prefs.show_axis_overlay and prefs.work_mode == 'ANIMATION'
+            and context.mode in {'OBJECT', 'POSE'})
+
+
 def _active_tool_kind(context):
-    if context.mode not in _GIZMO_MODES:
+    if not _custom_gizmo_here(context):
         return None
     try:
         tool = context.workspace.tools.from_space_view3d_mode(context.mode, create=False)
@@ -784,7 +793,7 @@ def _rotation_progress(context, hot):
 
 def _draw_gizmo():
     context = bpy.context
-    if not _gizmo_enabled():
+    if not _gizmo_enabled() or not _custom_gizmo_here(context):
         return
     kind = _current_kind(context)
     if kind is None:
