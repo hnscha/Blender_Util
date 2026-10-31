@@ -1,9 +1,9 @@
 schema_version = "1.0.0"
 
-id = "maya_unreal_nav"
+id = "dcc_navigation"
 version = "1.0.0"
-name = "Maya/Unreal Navigation"
-tagline = "Maya/Unreal style QWER tools and Alt+mouse viewport navigation"
+name = "DCC Navigation"
+tagline = "Maya, Unreal and 3ds Max style viewport navigation and QWER tools"
 maintainer = "HS"
 type = "add-on"
 

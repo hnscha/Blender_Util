@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """
-뷰포트 조작 모드 전환 애드온 (Blender 기본 / Maya·Unreal / 3ds Max).
+DCC Navigation — 뷰포트 조작 모드 전환 애드온 (Blender 기본 / Maya·Unreal / 3ds Max).
 
   Maya·Unreal  Alt + 왼쪽 / 가운데 / 오른쪽 드래그 = 회전 / 이동 / 줌
   3ds Max      가운데 드래그 = 이동, Alt + 가운데 = 회전, Ctrl + Alt + 가운데(또는 휠) = 줌
@@ -8,7 +8,7 @@
                1 / 2 (숫자 윗줄) = 좌표계 World(Global) / Local  (넘패드는 건드리지 않음)
   Blender 기본 애드온 키를 모두 빼고 꺼 둔 기본 단축키를 되살린다.
 
-모드는 3D 뷰포트 N 패널의 "Nav" 탭이나 애드온 설정에서 바꾸고, 환경 설정에 저장되어 재시작 후에도 유지된다.
+모드는 3D 뷰포트 N 패널의 "DCC Nav" 탭이나 애드온 설정에서 바꾸고, 환경 설정에 저장되어 재시작 후에도 유지된다.
 Object / Edit / Pose 모드, Layout / Modeling / Animating 등 모든 워크스페이스에서 같다.
 선택한 모드와 같은 키를 쓰는 Blender 기본 단축키만 활성 키맵에서 꺼 두고, 모드를 바꾸거나 애드온을 끄면 되돌린다.
 이동/회전/스케일 중에는 Blender 가 숨기는 기즈모 대신 같은 모양의 X/Y/Z 기즈모를 그린다 (현재 좌표계 기준).
@@ -324,7 +324,7 @@ def _draw_mode_ui(layout, prefs):
         col.label(text=line)
 
 
-class MayaUnrealNavPreferences(bpy.types.AddonPreferences):
+class DCCNavigationPreferences(bpy.types.AddonPreferences):
     bl_idname = __package__
 
     nav_mode: bpy.props.EnumProperty(
@@ -377,11 +377,11 @@ class MayaUnrealNavPreferences(bpy.types.AddonPreferences):
                 col.label(text="{:s} : {:s}  ({:s})".format(km.name, _key_text(kmi), kmi.name or kmi.idname))
 
 
-class VIEW3D_PT_nav_mode(bpy.types.Panel):
-    bl_label = "조작 모드"
+class VIEW3D_PT_dcc_navigation(bpy.types.Panel):
+    bl_label = "DCC Navigation"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = "Nav"
+    bl_category = "DCC Nav"
 
     def draw(self, _context):
         prefs = _prefs()
@@ -394,8 +394,8 @@ class VIEW3D_PT_nav_mode(bpy.types.Panel):
 
 
 _classes = (
-    MayaUnrealNavPreferences,
-    VIEW3D_PT_nav_mode,
+    DCCNavigationPreferences,
+    VIEW3D_PT_dcc_navigation,
 )
 
 
@@ -623,5 +623,8 @@ def unregister():
         bpy.app.timers.unregister(_startup_apply)
     _restore_conflicts()
     _unregister_keymaps()
+    # 활성 키맵에 남은 애드온 항목 사본을 바로 걷어낸다.
+    if bpy.context.window_manager.keyconfigs.user is not None:
+        bpy.context.window_manager.keyconfigs.update()
     for cls in reversed(_classes):
         bpy.utils.unregister_class(cls)
