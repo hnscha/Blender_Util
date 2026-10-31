@@ -426,7 +426,11 @@ _TOOL_KINDS = {
 _GIZMO_MODES = {'OBJECT', 'EDIT_MESH', 'EDIT_ARMATURE', 'POSE'}
 
 # 마우스가 올라간 축 (GizmoGroup 이 갱신), 변환을 시작할 때 잡은 축.
-_state = {"hover": None, "drag": None, "running": None, "start_q": None, "start_rot": None, "angle": None}
+_state = {
+    "hover": None, "drag": None, "running": None,
+    "start_q": None, "start_m3": None, "start_rot": None,
+    "angle": None, "scale": None,
+}
 _text_handle = None
 # 우리가 Blender 툴 기즈모를 숨긴 SpaceView3D 들 (as_pointer).
 _hidden_spaces = set()
@@ -606,16 +610,35 @@ def _axis_basis(rot, i):
     return side, up, axis
 
 
-def _active_quat(context):
-    """회전량 표시에 쓰는 활성 대상의 월드 회전. 편집 모드는 None."""
+def _active_matrix3(context):
+    """회전량·스케일량 표시에 쓰는 활성 대상의 월드 3x3 행렬. 편집 모드는 None."""
     obj = context.active_object
     if obj is None:
         return None
     if context.mode == 'OBJECT':
-        return obj.matrix_world.to_quaternion()
+        return obj.matrix_world.to_3x3()
     if context.mode == 'POSE' and context.active_pose_bone is not None:
-        return (obj.matrix_world @ context.active_pose_bone.matrix).to_quaternion()
+        return (obj.matrix_world @ context.active_pose_bone.matrix).to_3x3()
     return None
+
+
+def _active_quat(context):
+    m3 = _active_matrix3(context)
+    return m3.to_quaternion() if m3 is not None else None
+
+
+def _scale_factors(context):
+    """변환 시작부터 지금까지 시작 기저의 각 축 방향으로 늘어난 배율 (x, y, z). 모르면 None."""
+    start_m3 = _state["start_m3"]
+    start_rot = _state["start_rot"]
+    cur = _active_matrix3(context)
+    if start_m3 is None or start_rot is None or cur is None:
+        return None
+    try:
+        delta = cur @ start_m3.inverted()
+    except ValueError:
+        return None
+    return tuple((delta @ start_rot.col[i].normalized()).length for i in range(3))
 
 
 def _current_kind(context):
@@ -627,14 +650,17 @@ def _current_kind(context):
             # 회전량(Maya/Max 의 각도 부채꼴·숫자) 계산 기준을 잡아 둔다.
             _state["drag"] = _state["hover"]
             _state["start_q"] = _active_quat(context)
+            _state["start_m3"] = _active_matrix3(context)
             _state["start_rot"] = _orientation_matrix(context)
         _state["running"] = running
         return running
     _state["running"] = None
     _state["drag"] = None
     _state["start_q"] = None
+    _state["start_m3"] = None
     _state["start_rot"] = None
     _state["angle"] = None
+    _state["scale"] = None
     return _active_tool_kind(context)
 
 
@@ -707,17 +733,29 @@ def _draw_gizmo():
 
     hot = _state["drag"] if _state["running"] is not None else _state["hover"]
 
+    # Maya/Max 처럼 스케일 중에는 핸들이 배율만큼 늘었다 줄었다 하고, 바뀌는 축이 강조된다.
+    factors = _scale_factors(context) if _state["running"] == 'SCALE' else None
+    _state["scale"] = (factors, center.copy()) if factors is not None else None
+
     # 기본 기즈모와 같은 모양: 이동 = 화살표, 회전 = 축별 링, 스케일 = 끝이 네모인 축.
     for i in range(3):
-        color = _HIGHLIGHT_COLOR if hot == i else _AXIS_COLORS[i]
-        width = 3.5 if hot == i else 2.5
+        scaling = factors is not None and abs(factors[i] - 1.0) > 1e-3
+        color = _HIGHLIGHT_COLOR if hot == i or scaling else _AXIS_COLORS[i]
+        width = 3.5 if hot == i or scaling else 2.5
         side, up, axis = _axis_basis(rot, i)
 
         if kind == 'ROTATE':
             lines(loop(circle(center, side, up, length)), color, width)
             continue
 
-        tip = center + axis * length
+        axis_len = length
+        if factors is not None:
+            axis_len = length * min(max(factors[i], 0.05), 5.0)
+            if scaling:
+                # 원래 길이 자리를 흐리게 남겨 얼마나 늘었는지 보이게 한다.
+                ghost = center + axis * length
+                lines([center, ghost], _AXIS_COLORS[i][:3] + (0.35,), 1.5)
+        tip = center + axis * axis_len
         lines([center, tip], color, width)
 
         if kind == 'SCALE':
@@ -760,24 +798,30 @@ def _draw_gizmo():
 
 
 def _draw_angle_text():
-    """회전 중 각도 숫자 (Max 처럼 기즈모 옆에 표시)."""
-    info = _state["angle"]
-    if info is None or _state["running"] != 'ROTATE' or not _gizmo_enabled():
+    """회전 중 각도, 스케일 중 배율 숫자 (Max 처럼 기즈모 옆에 표시)."""
+    if not _gizmo_enabled():
+        return
+    running = _state["running"]
+    if running == 'ROTATE' and _state["angle"] is not None:
+        i, deg, center = _state["angle"]
+        text = "{:s}  {:+.1f}°".format("XYZ"[i], deg)
+    elif running == 'SCALE' and _state["scale"] is not None:
+        factors, center = _state["scale"]
+        text = "   ".join("{:s} ×{:.3f}".format("XYZ"[i], f) for i, f in enumerate(factors))
+    else:
         return
     context = bpy.context
     region = context.region
     rv3d = context.region_data
     if region is None or rv3d is None:
         return
-    i, deg, center = info
     p2d = view3d_utils.location_3d_to_region_2d(region, rv3d, center)
     if p2d is None:
         return
     font = 0
     size = int(14 * context.preferences.system.ui_scale)
     blf.size(font, size)
-    text = "{:s}  {:+.1f}°".format("XYZ"[i], deg)
-    x = p2d.x + _prefs().axis_overlay_size * 0.75
+    x =p2d.x + _prefs().axis_overlay_size * 0.75
     y = p2d.y + _prefs().axis_overlay_size * 0.75
     blf.color(font, 0.0, 0.0, 0.0, 0.7)
     blf.position(font, x + 1, y - 1, 0)
