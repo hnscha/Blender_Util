@@ -1499,6 +1499,29 @@ def _trackball_hit(context, location):
     return True
 
 
+def _center_hit(context, location):
+    """기즈모 가운데 핸들(이동 사각형 / 스케일 원) 영역인지. 화살표 줄기보다 먼저 잡히게 직접 판정한다."""
+    frame = _gizmo_frame(context)
+    if frame is None:
+        return False
+    c2d = view3d_utils.location_3d_to_region_2d(context.region, context.region_data, frame[0])
+    if c2d is None:
+        return False
+    radius = max(_prefs().axis_overlay_size * _CENTER_SIZE * 1.4, 10.0 * context.preferences.system.ui_scale)
+    return (Vector(location) - c2d).length <= radius
+
+
+class DCCNAV_GT_center_area(bpy.types.Gizmo):
+    """기즈모 가운데(이동 = 화면 평면 자유 이동, 스케일 = 전체 스케일)를 잡는 영역. 그리기는 _draw_gizmo 가 한다."""
+    bl_idname = "DCCNAV_GT_center_area"
+
+    def draw(self, _context):
+        pass
+
+    def test_select(self, context, location):
+        return 0 if _center_hit(context, location) else -1
+
+
 class DCCNAV_GT_trackball_area(bpy.types.Gizmo):
     """회전 링 안쪽을 잡는 영역. 직접 판정해서 X/Y/Z 링이 항상 먼저 잡히게 한다. 그리기는 _draw_gizmo 가 한다."""
     bl_idname = "DCCNAV_GT_trackball_area"
@@ -1539,13 +1562,13 @@ class VIEW3D_GGT_dcc_navigation(bpy.types.GizmoGroup):
         # 각 목록의 번호 = 연산자 axis 번호 (0~2 축, 3 이후 핸들).
         self.handles = {
             'MOVE': [new("GIZMO_GT_arrow_3d", draw_style='NORMAL') for _ in range(3)]
-            + [new("GIZMO_GT_move_3d", draw_style='RING_2D', draw_options={'FILL', 'ALIGN_VIEW'})]
+            + [new("DCCNAV_GT_center_area")]
             + [new("GIZMO_GT_primitive_3d", draw_style='PLANE') for _ in range(3)],
             'ROTATE': [new("GIZMO_GT_dial_3d") for _ in range(3)]
             + [new("GIZMO_GT_dial_3d")]
             + [new("DCCNAV_GT_trackball_area")],
             'SCALE': [new("GIZMO_GT_arrow_3d", draw_style='BOX') for _ in range(3)]
-            + [new("GIZMO_GT_move_3d", draw_style='RING_2D', draw_options={'FILL', 'ALIGN_VIEW'})]
+            + [new("DCCNAV_GT_center_area")]
             + [new("GIZMO_GT_primitive_3d", draw_style='PLANE') for _ in range(3)],
         }
         self.bound = None
@@ -1690,6 +1713,7 @@ _classes = (
     DCCNavigationPreferences,
     VIEW3D_PT_dcc_navigation,
     DCCNAV_OT_gizmo_transform,
+    DCCNAV_GT_center_area,
     DCCNAV_GT_trackball_area,
     VIEW3D_GGT_dcc_navigation,
 )
