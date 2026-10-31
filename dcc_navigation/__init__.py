@@ -445,6 +445,19 @@ _TOOL_KINDS = {
 # DCC 기즈모를 쓰는 모드. 그 밖의 모드(커브·격자 편집 등)는 Blender 기즈모를 그대로 쓴다.
 _GIZMO_MODES = {'OBJECT', 'EDIT_MESH', 'EDIT_ARMATURE', 'POSE'}
 
+# 축(0~2) 말고 잡을 수 있는 핸들 번호.
+H_CENTER = 3       # 이동: 가운데 사각형(화면 평면 자유 이동), 스케일: 가운데(전체 스케일)
+H_VIEW_RING = 3    # 회전: 흰 바깥 링(화면 축 회전)
+H_TRACKBALL = 4    # 회전: 링 안쪽(자유 회전)
+H_PLANE = 4        # 이동: 평면 핸들 4/5/6 = 법선 X/Y/Z (YZ/XZ/XY 평면)
+
+# 핸들 크기 (기즈모 길이 대비).
+_CENTER_SIZE = 0.12
+_PLANE_OFFSET = 0.32
+_PLANE_SIZE = 0.09
+_VIEW_RING_RADIUS = 1.2
+_TRACKBALL_RADIUS = 0.95
+
 # 마우스가 올라간 축 (GizmoGroup 이 갱신), 변환을 시작할 때 잡은 축.
 _state = {
     "hover": None, "drag": None, "running": None,
@@ -803,19 +816,58 @@ def _draw_gizmo():
             ring = circle(base, side, up, length * 0.06, segs=12)
             tris([p for s in range(12) for p in (tip, ring[s], ring[(s + 1) % 12])], color)
 
+    view_x = rv3d.view_rotation @ Vector((1.0, 0.0, 0.0))
+    view_y = rv3d.view_rotation @ Vector((0.0, 1.0, 0.0))
+    white = (1.0, 1.0, 1.0, 0.8)
+
+    def square(c, u, v, half):
+        return [c + (u * su + v * sv) * half for su, sv in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+
+    def quad_tris(q):
+        return [q[0], q[1], q[2], q[0], q[2], q[3]]
+
+    if kind == 'MOVE':
+        # 가운데 사각형 = 화면 평면 자유 이동 (Maya 의 가운데 사각형).
+        sq = square(center, view_x, view_y, length * _CENTER_SIZE)
+        if hot == H_CENTER:
+            tris(quad_tris(sq), (1.0, 1.0, 1.0, 0.25))
+        lines(loop(sq), _HIGHLIGHT_COLOR if hot == H_CENTER else white, 2.0)
+        # 평면 핸들 = 두 축 평면에서 이동 (Max 의 XY/YZ/XZ 사각형). 색은 법선 축 색.
+        for n in range(3):
+            u = rot.col[(n + 1) % 3].normalized()
+            v = rot.col[(n + 2) % 3].normalized()
+            pos = center + (u + v) * (length * _PLANE_OFFSET)
+            q = square(pos, u, v, length * _PLANE_SIZE)
+            h = hot == H_PLANE + n
+            tris(quad_tris(q), _HIGHLIGHT_COLOR[:3] + (0.6,) if h else _AXIS_COLORS[n][:3] + (0.35,))
+            lines(loop(q), _HIGHLIGHT_COLOR if h else _AXIS_COLORS[n], 1.5)
+
+    if kind == 'SCALE':
+        # 가운데 원 = 전체(균일) 스케일.
+        ring = circle(center, view_x, view_y, length * _CENTER_SIZE)
+        if hot == H_CENTER:
+            tris([p for s in range(len(ring)) for p in (center, ring[s], ring[(s + 1) % len(ring)])],
+                 (1.0, 1.0, 1.0, 0.25))
+        lines(loop(ring), _HIGHLIGHT_COLOR if hot == H_CENTER else white, 2.0)
+
     if kind == 'ROTATE':
-        # 화면 방향 바깥 링 (기본 회전 기즈모의 흰 링).
-        view_x = rv3d.view_rotation @ Vector((1.0, 0.0, 0.0))
-        view_y = rv3d.view_rotation @ Vector((0.0, 1.0, 0.0))
-        lines(loop(circle(center, view_x, view_y, length * 1.2)), (1.0, 1.0, 1.0, 0.6))
+        # 링 안쪽 = 자유 회전: 마우스를 올리거나 돌리는 중이면 은은하게 채운다.
+        if hot == H_TRACKBALL:
+            disc = circle(center, view_x, view_y, length * _TRACKBALL_RADIUS)
+            tris([p for s in range(len(disc)) for p in (center, disc[s], disc[(s + 1) % len(disc)])],
+                 (1.0, 1.0, 1.0, 0.12))
+        # 화면 방향 바깥 링 = 화면 축 회전 (기본 회전 기즈모의 흰 링).
+        lines(loop(circle(center, view_x, view_y, length * _VIEW_RING_RADIUS)),
+              _HIGHLIGHT_COLOR if hot == H_VIEW_RING else (1.0, 1.0, 1.0, 0.6),
+              3.5 if hot == H_VIEW_RING else 2.5)
 
         # Maya/Max 처럼 돌린 만큼을 부채꼴로 채워 보여 준다 (시작 위치 기준).
         r0 = None
         if _state["running"] != 'ROTATE':
             progress = None
         elif own is not None and own["kind"] == 'ROTATE':
-            # 애드온 자체 회전: 각도와 잡은 지점(부채꼴 시작)을 연산자가 알려 준다.
-            progress = (own["axis"], own["axis_vec"], own["value"])
+            # 애드온 자체 회전: 각도와 잡은 지점(부채꼴 시작)을 연산자가 알려 준다. 자유 회전은 부채꼴 없음.
+            progress = None if own["value"] is None else (own["axis"], own["axis_vec"], own["value"])
             r0 = own["r0"]
         else:
             progress = _rotation_progress(context, hot)
@@ -830,10 +882,11 @@ def _draw_gizmo():
             r0 = r0.normalized()
             b = a.cross(r0)
             steps = max(2, int(abs(theta) / (2.0 * math.pi) * 64))
-            arc = [center + (r0 * math.cos(theta * s / steps) + b * math.sin(theta * s / steps)) * length
+            radius = length * (_VIEW_RING_RADIUS if i == H_VIEW_RING else 1.0)
+            arc = [center + (r0 * math.cos(theta * s / steps) + b * math.sin(theta * s / steps)) * radius
                    for s in range(steps + 1)]
             if abs(theta) > 1e-4:
-                fill = _AXIS_COLORS[i][:3] + (0.25,)
+                fill = (_AXIS_COLORS[i][:3] if i < 3 else (1.0, 1.0, 1.0)) + (0.25,)
                 tris([p for s in range(steps) for p in (center, arc[s], arc[s + 1])], fill)
             lines([center, arc[0], center, arc[-1]], _HIGHLIGHT_COLOR, 2.0)
 
@@ -847,7 +900,7 @@ def _draw_angle_text():
     running = _state["running"]
     if running == 'ROTATE' and _state["angle"] is not None:
         i, deg, center = _state["angle"]
-        text = "{:s}  {:+.1f}°".format("XYZ"[i], deg)
+        text = "{:s}  {:+.1f}°".format(("X", "Y", "Z", "View")[i], deg)
     elif running == 'SCALE' and _state["scale"] is not None:
         factors, center = _state["scale"]
         text = "   ".join("{:s} ×{:.3f}".format("XYZ"[i], f) for i, f in enumerate(factors))
@@ -958,7 +1011,9 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
         items=(('MOVE', "이동", ""), ('ROTATE', "회전", ""), ('SCALE', "스케일", "")),
         options={'SKIP_SAVE'},
     )
-    axis: bpy.props.IntProperty(min=0, max=2, options={'SKIP_SAVE'})
+    # 0~2 = X/Y/Z 축. 그 밖은 핸들: H_CENTER(이동=화면 평면, 스케일=전체), H_VIEW_RING(회전 바깥 링),
+    # H_TRACKBALL(회전 링 안쪽 = 자유 회전), H_PLANE+i(이동 평면 핸들, i 축이 법선).
+    axis: bpy.props.IntProperty(min=0, max=6, options={'SKIP_SAVE'})
 
     @classmethod
     def poll(cls, context):
@@ -1123,17 +1178,37 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
         snap = event.ctrl
         if self.kind == 'MOVE':
             o, d = self._ray(context, mouse)
-            t = _closest_axis_param(self.center, self.a, o, d)
-            if t is None:
+            if self.axis < 3:
+                t = _closest_axis_param(self.center, self.a, o, d)
+                if t is None:
+                    return self.value
+                value = t - self.t0
+                if precise:
+                    value *= 0.1
+                if snap:
+                    step = 0.1 * (context.scene.unit_settings.scale_length or 1.0)
+                    value = round(value / step) * step
+                return value
+            # 가운데 사각형(화면 평면) / 평면 핸들: 그 평면 위에서 자유 이동.
+            hit = _ray_plane_hit(o, d, self.center, self.plane_n)
+            if hit is None:
                 return self.value
-            value = t - self.t0
+            vec = hit - self.hit0
             if precise:
-                value *= 0.1
+                vec *= 0.1
             if snap:
-                step = context.scene.unit_settings.scale_length or 1.0
-                value = round(value / (0.1 * step)) * (0.1 * step)
-            return value
+                step = 0.1 * (context.scene.unit_settings.scale_length or 1.0)
+                vec = Vector([round(c / step) * step for c in vec])
+            return vec
         if self.kind == 'ROTATE':
+            if self.axis == H_TRACKBALL:
+                # 자유 회전: 화면 좌우 = 화면 세로축 기준, 상하 = 화면 가로축 기준.
+                dmouse = mouse - self.last_mouse
+                self.last_mouse = mouse
+                k = 0.01 * (0.1 if precise else 1.0)
+                incr = (Quaternion(self.view_y, dmouse.x * k) @ Quaternion(self.view_x, -dmouse.y * k))
+                self.q_total = incr @ self.q_total
+                return self.q_total.angle
             v = mouse - self.c2d
             if v.length < 1.0 or self.last_vec.length < 1.0:
                 return self.value
@@ -1146,10 +1221,12 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
                 value = round(value / step) * step
             return value
         # SCALE
-        proj = (mouse - self.c2d).dot(self.s2d)
-        if abs(self.d0) < 1e-6:
-            return self.value
-        factor = proj / self.d0
+        if self.axis == H_CENTER:
+            # 가운데 핸들: 전체(균일) 스케일. 중심에서 멀어지면 커지고 가까워지면 작아진다.
+            dist = (mouse - self.c2d).length
+            factor = dist / self.d0
+        else:
+            factor = (mouse - self.c2d).dot(self.s2d) / self.d0
         if precise:
             factor = 1.0 + (factor - 1.0) * 0.1
         if snap:
@@ -1158,37 +1235,57 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
 
     def _delta(self):
         c, a = self.center, self.a
+        to_c = Matrix.Translation(c)
+        from_c = Matrix.Translation(-c)
         if self.kind == 'MOVE':
-            return Matrix.Translation(a * self.value)
+            if self.axis < 3:
+                return Matrix.Translation(a * self.value)
+            return Matrix.Translation(self.value)
         if self.kind == 'ROTATE':
-            return Matrix.Translation(c) @ Matrix.Rotation(self.value, 4, a) @ Matrix.Translation(-c)
+            if self.axis == H_TRACKBALL:
+                return to_c @ self.q_total.to_matrix().to_4x4() @ from_c
+            return to_c @ Matrix.Rotation(self.value, 4, a) @ from_c
         f = self.value
+        if self.axis == H_CENTER:
+            return to_c @ Matrix.Scale(f, 4) @ from_c
         s3 = Matrix.Identity(3)
         for r in range(3):
             for col in range(3):
                 s3[r][col] += (f - 1.0) * a[r] * a[col]
-        return Matrix.Translation(c) @ s3.to_4x4() @ Matrix.Translation(-c)
+        return to_c @ s3.to_4x4() @ from_c
 
     def _publish(self):
         factors = [1.0, 1.0, 1.0]
         if self.kind == 'SCALE':
-            factors[self.axis] = self.value
+            if self.axis == H_CENTER:
+                factors = [self.value] * 3
+            else:
+                factors[self.axis] = self.value
+        rotating_axis = self.kind == 'ROTATE' and self.axis != H_TRACKBALL
         _state["op"] = {
             "kind": self.kind,
             "axis": self.axis,
             "axis_vec": self.a.copy(),
-            "value": self.value,
+            "value": self.value if rotating_axis else None,
             "r0": self.r0,
             "factors": tuple(factors),
         }
 
     def _header(self, context):
-        name = "XYZ"[self.axis]
         if self.kind == 'MOVE':
-            text = "이동 {:s}: {:.4f}".format(name, self.value)
+            if self.axis < 3:
+                text = "이동 {:s}: {:.4f}".format("XYZ"[self.axis], self.value)
+            else:
+                name = "화면 평면" if self.axis == H_CENTER else ("YZ", "XZ", "XY")[self.axis - H_PLANE]
+                text = "이동 {:s}: {:.4f}  {:.4f}  {:.4f}".format(name, *self.value)
         elif self.kind == 'ROTATE':
-            text = "회전 {:s}: {:+.2f}°".format(name, math.degrees(self.value))
+            if self.axis == H_TRACKBALL:
+                text = "자유 회전: {:.2f}°".format(math.degrees(self.value))
+            else:
+                name = "화면" if self.axis == H_VIEW_RING else "XYZ"[self.axis]
+                text = "회전 {:s}: {:+.2f}°".format(name, math.degrees(self.value))
         else:
+            name = "전체" if self.axis == H_CENTER else "XYZ"[self.axis]
             text = "스케일 {:s}: ×{:.3f}".format(name, self.value)
         text += "    Ctrl: 스냅   Shift: 정밀   우클릭/Esc: 취소"
         context.area.header_text_set(text)
@@ -1203,40 +1300,66 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
         if center is None:
             return {'CANCELLED'}
         rot = _orientation_matrix(context)
-        self.center = center
-        self.a = rot.col[self.axis].normalized()
         region = context.region
         rv3d = context.region_data
+        view_x = rv3d.view_rotation @ Vector((1.0, 0.0, 0.0))
+        view_y = rv3d.view_rotation @ Vector((0.0, 1.0, 0.0))
+        toward = rv3d.view_rotation @ Vector((0.0, 0.0, 1.0))
+        self.center = center
+        if self.axis < 3:
+            self.a = rot.col[self.axis].normalized()
+        else:
+            self.a = toward.normalized()
         mouse = Vector((event.mouse_region_x, event.mouse_region_y))
         self.c2d = view3d_utils.location_3d_to_region_2d(region, rv3d, center) or mouse.copy()
         self.r0 = None
 
         if self.kind == 'MOVE':
             o, d = self._ray(context, mouse)
-            t0 = _closest_axis_param(center, self.a, o, d)
-            if t0 is None:
-                return {'CANCELLED'}
-            self.t0 = t0
-            self.value = 0.0
+            if self.axis < 3:
+                t0 = _closest_axis_param(center, self.a, o, d)
+                if t0 is None:
+                    return {'CANCELLED'}
+                self.t0 = t0
+                self.value = 0.0
+            else:
+                if self.axis == H_CENTER:
+                    self.plane_n = toward.normalized()
+                else:
+                    self.plane_n = rot.col[self.axis - H_PLANE].normalized()
+                hit0 = _ray_plane_hit(o, d, center, self.plane_n)
+                if hit0 is None:
+                    return {'CANCELLED'}
+                self.hit0 = hit0
+                self.value = Vector((0.0, 0.0, 0.0))
         elif self.kind == 'ROTATE':
-            self.last_vec = mouse - self.c2d
-            self.raw = 0.0
-            toward = rv3d.view_rotation @ Vector((0.0, 0.0, 1.0))
-            # 화면에서 반시계로 돌리면, 축이 보는 사람 쪽을 향할 때 + 회전이다.
-            self.view_sign = 1.0 if self.a.dot(toward) >= 0.0 else -1.0
-            o, d = self._ray(context, mouse)
-            hit = _ray_plane_hit(o, d, center, self.a)
-            if hit is not None and (hit - center).length > 1e-6:
-                self.r0 = (hit - center).normalized()
-            self.value = 0.0
+            if self.axis == H_TRACKBALL:
+                self.view_x = view_x.normalized()
+                self.view_y = view_y.normalized()
+                self.last_mouse = mouse
+                self.q_total = Quaternion()
+                self.value = 0.0
+            else:
+                self.last_vec = mouse - self.c2d
+                self.raw = 0.0
+                # 화면에서 반시계로 돌리면, 축이 보는 사람 쪽을 향할 때 + 회전이다.
+                self.view_sign = 1.0 if self.a.dot(toward) >= 0.0 else -1.0
+                o, d = self._ray(context, mouse)
+                hit = _ray_plane_hit(o, d, center, self.a)
+                if hit is not None and (hit - center).length > 1e-6:
+                    self.r0 = (hit - center).normalized()
+                self.value = 0.0
         else:
-            tip2d = view3d_utils.location_3d_to_region_2d(region, rv3d, center + self.a)
-            if tip2d is None or (tip2d - self.c2d).length < 1e-3:
-                return {'CANCELLED'}
-            self.s2d = (tip2d - self.c2d).normalized()
-            self.d0 = (mouse - self.c2d).dot(self.s2d)
-            if abs(self.d0) < 4.0:
-                self.d0 = 4.0 if self.d0 >= 0.0 else -4.0
+            if self.axis == H_CENTER:
+                self.d0 = max((mouse - self.c2d).length, 4.0)
+            else:
+                tip2d = view3d_utils.location_3d_to_region_2d(region, rv3d, center + self.a)
+                if tip2d is None or (tip2d - self.c2d).length < 1e-3:
+                    return {'CANCELLED'}
+                self.s2d = (tip2d - self.c2d).normalized()
+                self.d0 = (mouse - self.c2d).dot(self.s2d)
+                if abs(self.d0) < 4.0:
+                    self.d0 = 4.0 if self.d0 >= 0.0 else -4.0
             self.value = 1.0
 
         _state["drag"] = self.axis
@@ -1285,23 +1408,27 @@ class VIEW3D_GGT_dcc_navigation(bpy.types.GizmoGroup):
         return _gizmo_enabled() and _active_tool_kind(context) is not None
 
     def setup(self, _context):
-        self.handles = {}
-        for kind in ('MOVE', 'ROTATE', 'SCALE'):
-            items = []
-            for i in range(3):
-                if kind == 'ROTATE':
-                    gz = self.gizmos.new("GIZMO_GT_dial_3d")
-                else:
-                    gz = self.gizmos.new("GIZMO_GT_arrow_3d")
-                    gz.draw_style = 'BOX' if kind == 'SCALE' else 'NORMAL'
-                gz.use_draw_scale = False
-                gz.color = _AXIS_COLORS[i][:3]
-                gz.color_highlight = _HIGHLIGHT_COLOR[:3]
-                # 보이는 모양은 _draw_gizmo 가 그린다. 이 기즈모는 잡는 영역만 제공한다.
-                gz.alpha = 0.0
-                gz.alpha_highlight = 0.0
-                items.append(gz)
-            self.handles[kind] = items
+        def new(gtype, **kw):
+            gz = self.gizmos.new(gtype)
+            for name, value in kw.items():
+                setattr(gz, name, value)
+            gz.use_draw_scale = False
+            # 보이는 모양은 _draw_gizmo 가 그린다. 이 기즈모는 잡는 영역만 제공한다.
+            gz.alpha = 0.0
+            gz.alpha_highlight = 0.0
+            return gz
+
+        # 각 목록의 번호 = 연산자 axis 번호 (0~2 축, 3 이후 핸들).
+        self.handles = {
+            'MOVE': [new("GIZMO_GT_arrow_3d", draw_style='NORMAL') for _ in range(3)]
+            + [new("GIZMO_GT_move_3d", draw_style='RING_2D', draw_options={'FILL', 'ALIGN_VIEW'})]
+            + [new("GIZMO_GT_primitive_3d", draw_style='PLANE') for _ in range(3)],
+            'ROTATE': [new("GIZMO_GT_dial_3d") for _ in range(3)]
+            + [new("GIZMO_GT_dial_3d")]
+            + [new("GIZMO_GT_dial_3d", draw_options={'FILL'}, use_select_background=True)],
+            'SCALE': [new("GIZMO_GT_arrow_3d", draw_style='BOX') for _ in range(3)]
+            + [new("GIZMO_GT_move_3d", draw_style='RING_2D', draw_options={'FILL', 'ALIGN_VIEW'})],
+        }
         self.bound = None
 
     def _bind(self, orient, own):
@@ -1313,17 +1440,33 @@ class VIEW3D_GGT_dcc_navigation(bpy.types.GizmoGroup):
                     props.kind = kind
                     props.axis = i
                     continue
-                axis = [False, False, False]
-                axis[i] = True
+                # Blender 기본 모드: Blender 변환 연산자를 그대로 쓴다.
+                if kind == 'ROTATE' and i == H_TRACKBALL:
+                    props = gz.target_set_operator("transform.trackball")
+                    props.release_confirm = True
+                    continue
                 if kind == 'MOVE':
                     props = gz.target_set_operator("transform.translate")
                 elif kind == 'ROTATE':
                     props = gz.target_set_operator("transform.rotate")
-                    props.orient_axis = "XYZ"[i]
                 else:
                     props = gz.target_set_operator("transform.resize")
-                props.constraint_axis = axis
-                props.orient_type = orient
+                if i < 3:
+                    axis = [False, False, False]
+                    axis[i] = True
+                    props.constraint_axis = axis
+                    props.orient_type = orient
+                    if kind == 'ROTATE':
+                        props.orient_axis = "XYZ"[i]
+                elif kind == 'MOVE' and i >= H_PLANE:
+                    axis = [True, True, True]
+                    axis[i - H_PLANE] = False
+                    props.constraint_axis = axis
+                    props.orient_type = orient
+                elif kind == 'ROTATE':
+                    props.orient_type = 'VIEW'
+                    props.orient_axis = 'Z'
+                    props.constraint_axis = (False, False, True)
                 props.release_confirm = True
         self.bound = (orient, own)
 
@@ -1336,6 +1479,7 @@ class VIEW3D_GGT_dcc_navigation(bpy.types.GizmoGroup):
             self._bind(orient, own)
 
         hover = None
+        view_rot = context.region_data.view_rotation.to_matrix().to_4x4()
         for k, items in self.handles.items():
             for i, gz in enumerate(items):
                 visible = frame is not None and k == kind
@@ -1343,9 +1487,23 @@ class VIEW3D_GGT_dcc_navigation(bpy.types.GizmoGroup):
                 if not visible:
                     continue
                 center, rot, length = frame
-                side, up, axis = _axis_basis(rot, i)
-                basis = Matrix((side, up, axis)).transposed().to_4x4()
-                gz.matrix_basis = Matrix.Translation(center) @ basis @ Matrix.Scale(length, 4)
+                to_c = Matrix.Translation(center)
+                if i < 3:
+                    side, up, axis = _axis_basis(rot, i)
+                    basis = Matrix((side, up, axis)).transposed().to_4x4()
+                    gz.matrix_basis = to_c @ basis @ Matrix.Scale(length, 4)
+                elif k == 'ROTATE':
+                    radius = _VIEW_RING_RADIUS if i == H_VIEW_RING else _TRACKBALL_RADIUS
+                    gz.matrix_basis = to_c @ view_rot @ Matrix.Scale(length * radius, 4)
+                elif k == 'MOVE' and i >= H_PLANE:
+                    n = i - H_PLANE
+                    u = rot.col[(n + 1) % 3].normalized()
+                    v = rot.col[(n + 2) % 3].normalized()
+                    pos = center + (u + v) * (length * _PLANE_OFFSET)
+                    basis = Matrix((u, v, rot.col[n].normalized())).transposed().to_4x4()
+                    gz.matrix_basis = Matrix.Translation(pos) @ basis @ Matrix.Scale(length * _PLANE_SIZE, 4)
+                else:
+                    gz.matrix_basis = to_c @ Matrix.Scale(length * _CENTER_SIZE, 4)
                 if gz.is_highlight:
                     hover = i
         _state["hover"] = hover
