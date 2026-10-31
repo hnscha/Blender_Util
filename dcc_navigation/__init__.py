@@ -301,18 +301,46 @@ def _restore_conflicts():
             kmi.active = True
 
 
+def _apply_zoom_direction(mode):
+    """
+    드래그 줌 방향. Blender 기본은 Maya/Max 와 반대라서 Maya/Max 모드에서는 Invert Zoom Direction 을 켠다.
+    원래 사용자 값은 저장해 두었다가 Blender 기본 모드로 돌아가거나 애드온을 끄면 되돌린다.
+    (휠 줌 방향은 따로 설정이라 건드리지 않는다.)
+    """
+    prefs = _prefs()
+    if prefs is None:
+        return
+    inputs = bpy.context.preferences.inputs
+    if mode in {'MAYA', 'MAX'}:
+        if prefs.saved_invert_zoom < 0:
+            prefs.saved_invert_zoom = int(inputs.invert_mouse_zoom)
+        inputs.invert_mouse_zoom = True
+    else:
+        _restore_zoom_direction()
+
+
+def _restore_zoom_direction():
+    prefs = _prefs()
+    if prefs is None or prefs.saved_invert_zoom < 0:
+        return
+    bpy.context.preferences.inputs.invert_mouse_zoom = bool(prefs.saved_invert_zoom)
+    prefs.saved_invert_zoom = -1
+
+
 def _apply_mode(mode, hotkeys):
     _restore_conflicts()
     _unregister_keymaps()
     _register_keymaps(mode, hotkeys)
     _sync_user_keymaps()
     _disable_conflicts()
+    _apply_zoom_direction(mode)
 
 
 def _startup_apply():
     # 시작 직후에는 활성 키맵이 아직 다 만들어지지 않았을 수 있어 한 번 더 맞춘다.
     _sync_user_keymaps()
     _disable_conflicts()
+    _apply_zoom_direction(_current_mode())
     return None
 
 
@@ -511,6 +539,8 @@ class DCCNavigationPreferences(bpy.types.AddonPreferences):
         ),
         default='ANIMATION',
     )
+    # Maya/Max 모드에 들어가기 전 Invert Zoom Direction 값 (-1 = 저장 안 됨). 되돌릴 때 쓴다.
+    saved_invert_zoom: bpy.props.IntProperty(default=-1, options={'HIDDEN'})
     default_individual_pivot: bpy.props.BoolProperty(
         name="Default Pivot: Individual",
         description="Set the pivot to Individual Origins whenever a file is opened or created",
@@ -1996,6 +2026,7 @@ def unregister():
     if _on_load_post in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(_on_load_post)
     _restore_conflicts()
+    _restore_zoom_direction()
     _unregister_keymaps()
     # 활성 키맵에 남은 애드온 항목 사본을 바로 걷어낸다.
     if bpy.context.window_manager.keyconfigs.user is not None:
