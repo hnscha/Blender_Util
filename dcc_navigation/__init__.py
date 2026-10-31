@@ -332,17 +332,55 @@ def _update_gizmo_pref(_self, _context):
     _sync_tool_gizmos()
 
 
+_MODE_LABELS = {ident: label for ident, label, _desc in _MODE_ITEMS}
+_WORK_LABELS = {'ANIMATION': "Animation", 'RIGGING': "Rigging"}
+
+
+def _pending_differs(prefs):
+    return prefs.pending_nav_mode != prefs.nav_mode or prefs.pending_work_mode != prefs.work_mode
+
+
 def _draw_mode_ui(layout, prefs):
     # UI 는 영어 고정: Blender 인터페이스 번역(예: 한국어)을 적용하지 않는다 (translate=False).
+    # 모드 버튼은 '고를 것(pending)'만 바꾸고, Apply 를 눌러야 실제로 전환된다 (전환 직후 엉뚱한 조작 방지).
+    box = layout.box()
+    box.label(
+        text="Active: {:s} / {:s}".format(_MODE_LABELS[prefs.nav_mode], _WORK_LABELS[prefs.work_mode]),
+        icon='CHECKMARK', translate=False,
+    )
+
     layout.label(text="Viewport Navigation", translate=False)
     col = layout.column(align=True)
     # 열거형 버튼 이름은 expand 로 그리면 Blender 가 번역해 버려서, 버튼을 하나씩 영어 이름으로 그린다.
     for ident, label, _desc in _MODE_ITEMS:
-        col.prop_enum(prefs, "nav_mode", ident, text=label, translate=False)
+        col.prop_enum(prefs, "pending_nav_mode", ident, text=label, translate=False)
     box = layout.box()
     col = box.column(align=True)
-    for line in _MODE_HELP[prefs.nav_mode]:
+    for line in _MODE_HELP[prefs.pending_nav_mode]:
         col.label(text=line, translate=False)
+
+    layout.label(text="Work Mode", translate=False)
+    row = layout.row(align=True)
+    row.prop_enum(prefs, "pending_work_mode", 'ANIMATION', text="Animation", translate=False)
+    row.prop_enum(prefs, "pending_work_mode", 'RIGGING', text="Rigging", translate=False)
+    sub = layout.column(align=True)
+    if prefs.pending_work_mode == 'ANIMATION':
+        sub.label(text="Object/Pose: custom gizmo", translate=False)
+        sub.label(text="Edit mode (modeling): Blender gizmo", translate=False)
+    else:
+        sub.label(text="Blender gizmo everywhere", translate=False)
+        sub.label(text="Snap, numeric input, Auto IK", translate=False)
+
+    row = layout.row()
+    row.scale_y = 1.4
+    differs = _pending_differs(prefs)
+    row.alert = differs
+    row.operator(
+        "dccnav.apply_mode",
+        text="Apply" if differs else "Applied",
+        icon='FILE_REFRESH' if differs else 'CHECKMARK',
+        translate=False,
+    )
 
     layout.separator()
     layout.prop(prefs, "use_hotkeys", translate=False)
@@ -357,18 +395,35 @@ def _draw_mode_ui(layout, prefs):
     col = layout.column()
     col.active = prefs.show_axis_overlay
     col.prop(prefs, "scale_sensitivity", slider=True, translate=False)
-    col.separator()
-    col.label(text="Work Mode", translate=False)
-    row = col.row(align=True)
-    row.prop_enum(prefs, "work_mode", 'ANIMATION', text="Animation", translate=False)
-    row.prop_enum(prefs, "work_mode", 'RIGGING', text="Rigging", translate=False)
-    sub = col.column(align=True)
-    if prefs.work_mode == 'ANIMATION':
-        sub.label(text="Object/Pose: custom gizmo", translate=False)
-        sub.label(text="Edit mode (modeling): Blender gizmo", translate=False)
-    else:
-        sub.label(text="Blender gizmo everywhere", translate=False)
-        sub.label(text="Snap, numeric input, Auto IK", translate=False)
+
+
+class DCCNAV_OT_apply_mode(bpy.types.Operator):
+    """Apply the selected Viewport Navigation and Work Mode"""
+    bl_idname = "dccnav.apply_mode"
+    bl_label = "Apply Navigation Mode"
+    bl_options = {'INTERNAL'}
+
+    def execute(self, context):
+        prefs = _prefs()
+        if prefs is None:
+            return {'CANCELLED'}
+        nav, work = prefs.pending_nav_mode, prefs.pending_work_mode
+        prefs.work_mode = work
+        if prefs.nav_mode != nav:
+            prefs.nav_mode = nav            # update 콜백이 키맵을 다시 만든다.
+        else:
+            _apply_mode(nav, prefs.use_hotkeys)
+        # 활성 키맵을 지금 바로 다시 합쳐서, 전환 직후에도 새 조작만 동작하게 한다.
+        _sync_user_keymaps()
+        _disable_conflicts()
+        context.window_manager.keyconfigs.update()
+        _sync_tool_gizmos()
+        for win in context.window_manager.windows:
+            for area in win.screen.areas:
+                area.tag_redraw()
+        self.report({'INFO'}, "DCC Navigation: switched to {:s} / {:s}".format(
+            _MODE_LABELS[nav], _WORK_LABELS[work]))
+        return {'FINISHED'}
 
 
 class DCCNavigationPreferences(bpy.types.AddonPreferences):
@@ -380,6 +435,20 @@ class DCCNavigationPreferences(bpy.types.AddonPreferences):
         items=_MODE_ITEMS,
         default='MAYA',
         update=_update_keys,
+    )
+    # 패널에서 고른 값 (Apply 전까지 적용 안 됨).
+    pending_nav_mode: bpy.props.EnumProperty(
+        name="Navigation Mode (selected)",
+        items=_MODE_ITEMS,
+        default='MAYA',
+    )
+    pending_work_mode: bpy.props.EnumProperty(
+        name="Work Mode (selected)",
+        items=(
+            ('ANIMATION', "Animation", "Object/Pose mode: custom gizmo without constraint lines"),
+            ('RIGGING', "Rigging", "Blender's gizmo and transform everywhere"),
+        ),
+        default='ANIMATION',
     )
     use_hotkeys: bpy.props.BoolProperty(
         name="Hotkeys (QWER, 1/2)",
@@ -1763,6 +1832,7 @@ def _restore_tool_gizmos():
 
 _classes = (
     DCCNavigationPreferences,
+    DCCNAV_OT_apply_mode,
     VIEW3D_PT_dcc_navigation,
     DCCNAV_OT_gizmo_transform,
     DCCNAV_GT_center_area,
@@ -1778,6 +1848,11 @@ def register():
     global _draw_handle, _text_handle
     for cls in _classes:
         bpy.utils.register_class(cls)
+    prefs = _prefs()
+    if prefs is not None:
+        # 패널의 '고른 값'을 현재 적용된 값과 맞춰 둔다.
+        prefs.pending_nav_mode = prefs.nav_mode
+        prefs.pending_work_mode = prefs.work_mode
     mode = _current_mode()
     _register_keymaps(mode, _hotkeys_on())
     if bpy.context.window_manager.keyconfigs.user is not None:
