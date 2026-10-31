@@ -1414,12 +1414,12 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
             return vec
         if self.kind == 'ROTATE':
             if self.axis == H_TRACKBALL:
-                # 자유 회전: 화면 좌우 = 화면 세로축 기준, 상하 = 화면 가로축 기준.
-                dmouse = mouse - self.last_mouse
-                self.last_mouse = mouse
+                # 자유 회전: 누른 지점에서 지금 마우스까지의 '총 이동량'으로만 정한다 (화면 좌우 = 세로축, 상하 = 가로축).
+                # 지나온 경로는 따지지 않으므로, 제자리에서 마우스를 빙빙 돌려도 계속 돌지 않고
+                # 처음 누른 자리로 돌아오면 처음 방향으로 돌아온다.
+                d = mouse - self.press_mouse
                 k = 0.01 * (0.1 if precise else 1.0)
-                incr = (Quaternion(self.view_y, dmouse.x * k) @ Quaternion(self.view_x, -dmouse.y * k))
-                self.q_total = incr @ self.q_total
+                self.q_total = Quaternion(self.view_y, d.x * k) @ Quaternion(self.view_x, -d.y * k)
                 return self.q_total.angle
             v = mouse - self.c2d
             if v.length < 1.0 or self.last_vec.length < 1.0:
@@ -1621,7 +1621,7 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
             if self.axis == H_TRACKBALL:
                 self.view_x = view_x.normalized()
                 self.view_y = view_y.normalized()
-                self.last_mouse = mouse
+                self.press_mouse = mouse.copy()
                 self.q_total = Quaternion()
                 self.value = 0.0
             else:
