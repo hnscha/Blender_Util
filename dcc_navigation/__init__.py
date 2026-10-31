@@ -1090,6 +1090,17 @@ def _draw_gizmo():
                 tris([p for s in range(steps) for p in (center, arc[s], arc[s + 1])], fill)
             lines([center, arc[0], center, arc[-1]], _HIGHLIGHT_COLOR, 2.0)
 
+        # Max 처럼 잡은 점에 끄는 방향(접선) 화살표를 그린다.
+        if own is not None and own["kind"] == 'ROTATE' and own.get("tangent") is not None:
+            g, t = own["grab"], own["tangent"]
+            half = length * 0.45
+            a0, a1 = g - t * half, g + t * half
+            lines([a0, a1], _HIGHLIGHT_COLOR, 2.5)
+            side_t = own["axis_vec"].cross(t).normalized() * (length * 0.06)
+            for tip, sgn in ((a1, 1.0), (a0, -1.0)):
+                back = tip - t * (length * 0.1) * sgn
+                tris([tip, back + side_t, back - side_t], _HIGHLIGHT_COLOR)
+
     gpu.state.blend_set('NONE')
 
 
@@ -1421,13 +1432,10 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
                 k = 0.01 * (0.1 if precise else 1.0)
                 self.q_total = Quaternion(self.view_y, d.x * k) @ Quaternion(self.view_x, -d.y * k)
                 return self.q_total.angle
-            v = mouse - self.c2d
-            if v.length < 1.0 or self.last_vec.length < 1.0:
-                return self.value
-            ang = math.atan2(self.last_vec.x * v.y - self.last_vec.y * v.x, self.last_vec.dot(v))
-            self.last_vec = v
-            self.raw += ang * (0.1 if precise else 1.0)
-            value = self.raw * self.view_sign
+            # Max/Maya 방식: 잡은 지점에서 링의 접선 방향으로 끈 거리만큼 돈다.
+            # 접선 방향으로 링 반지름(px)만큼 끌면 1 라디안 = 잡은 점이 처음엔 마우스를 그대로 따라온다.
+            moved = (mouse - self.press_mouse).dot(self.tangent2d)
+            value = moved / self.ring_px * (0.1 if precise else 1.0)
             if snap:
                 step = math.radians(5.0)
                 value = round(value / step) * step
@@ -1536,6 +1544,9 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
             "value": self.value if rotating_axis else None,
             "r0": self.r0,
             "factors": tuple(factors),
+            # 링을 잡은 점과 끄는 방향(접선). Max 처럼 화면에 표시한다.
+            "grab": getattr(self, "grab3d", None) if rotating_axis else None,
+            "tangent": getattr(self, "tangent3d", None) if rotating_axis else None,
         }
 
     def _header(self, context):
@@ -1625,14 +1636,39 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
                 self.q_total = Quaternion()
                 self.value = 0.0
             else:
-                self.last_vec = mouse - self.c2d
-                self.raw = 0.0
-                # 화면에서 반시계로 돌리면, 축이 보는 사람 쪽을 향할 때 + 회전이다.
-                self.view_sign = 1.0 if self.a.dot(toward) >= 0.0 else -1.0
-                o, d = self._ray(context, mouse)
-                hit = _ray_plane_hit(o, d, center, self.a)
-                if hit is not None and (hit - center).length > 1e-6:
-                    self.r0 = (hit - center).normalized()
+                # 잡은 지점: 화면에 그려진 링에서 마우스와 가장 가까운 점 (같은 판정으로 앞쪽 반원 우선).
+                frame = _gizmo_frame(context)
+                length = frame[2] if frame is not None else 1.0
+                radius = length * (_VIEW_RING_RADIUS if self.axis == H_VIEW_RING else 1.0)
+                if self.axis == H_VIEW_RING:
+                    side, up = view_x.normalized(), view_y.normalized()
+                else:
+                    side, up, _ax = _axis_basis(rot, self.axis)
+                best = None
+                for s in range(96):
+                    t = s / 96 * 2.0 * math.pi
+                    r = side * math.cos(t) + up * math.sin(t)
+                    p = view3d_utils.location_3d_to_region_2d(region, rv3d, center + r * radius)
+                    if p is None:
+                        continue
+                    score = (p - mouse).length + (4.0 if r.dot(toward) < 0.0 else 0.0)
+                    if best is None or score < best[0]:
+                        best = (score, r, p)
+                self.r0 = best[1].normalized() if best else (side if side.length else Vector((1, 0, 0)))
+                grab = center + self.r0 * radius
+                grab2d = best[2] if best else mouse.copy()
+                # 접선 = 회전축 × 반지름 방향: + 방향으로 끌면 + 회전.
+                tangent = self.a.cross(self.r0).normalized()
+                tip = view3d_utils.location_3d_to_region_2d(region, rv3d, grab + tangent * radius * 0.2)
+                t2d = (tip - grab2d) if tip is not None else Vector((0.0, 0.0))
+                if t2d.length < 2.0:
+                    # 링을 옆에서 봐서 접선이 화면 깊이 방향이면, 화면에서 반지름에 수직인 방향을 쓴다.
+                    radial = grab2d - self.c2d
+                    t2d = Vector((-radial.y, radial.x)) * (1.0 if self.a.dot(toward) >= 0.0 else -1.0)
+                self.tangent2d = t2d.normalized() if t2d.length > 1e-6 else Vector((1.0, 0.0))
+                self.grab3d, self.tangent3d = grab, tangent
+                self.ring_px = max(_prefs().axis_overlay_size * (radius / length), 10.0)
+                self.press_mouse = mouse.copy()
                 self.value = 0.0
         else:
             if self.axis == H_CENTER:
