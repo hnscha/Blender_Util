@@ -70,28 +70,32 @@ _MODES = {
 }
 
 _MODE_ITEMS = (
-    ('BLENDER', "Blender 기본", "Blender 기본 뷰포트 조작"),
-    ('MAYA', "Maya / Unreal", "Alt + 왼쪽/가운데/오른쪽 드래그 = 회전/이동/줌"),
-    ('MAX', "3ds Max", "가운데 드래그 = 이동, Alt+가운데 = 회전, Ctrl+Alt+가운데 = 줌"),
+    ('BLENDER', "Blender Default", "Blender's default viewport navigation"),
+    ('MAYA', "Maya / Unreal", "Alt + Left/Middle/Right drag = Orbit/Pan/Zoom"),
+    ('MAX', "3ds Max", "Middle drag = Pan, Alt+Middle = Orbit, Ctrl+Alt+Middle = Zoom"),
 )
 
 _MODE_HELP = {
     'BLENDER': (
-        "가운데 드래그 : 회전,  Shift + 가운데 : 이동",
-        "Ctrl + 가운데 또는 휠 : 줌",
+        "MMB : Orbit",
+        "Shift + MMB : Pan",
+        "Ctrl + MMB / Wheel : Zoom",
     ),
     'MAYA': (
-        "Alt + 왼쪽 / 가운데 / 오른쪽 드래그 : 회전 / 이동 / 줌",
+        "Alt + LMB : Orbit",
+        "Alt + MMB : Pan",
+        "Alt + RMB : Zoom",
     ),
     'MAX': (
-        "가운데 드래그 : 이동,  Alt + 가운데 : 회전",
-        "Ctrl + Alt + 가운데 또는 휠 : 줌",
+        "MMB : Pan",
+        "Alt + MMB : Orbit",
+        "Ctrl + Alt + MMB / Wheel : Zoom",
     ),
 }
 
 _HOTKEY_HELP = (
-    "Q / W / E / R : 선택 / 이동 / 회전 / 스케일",
-    "1 / 2 : 좌표계 World / Local",
+    "Q W E R : Select Move Rotate Scale",
+    "1 / 2 : World / Local",
 )
 
 # 3D 뷰포트에서 이 애드온 키보다 먼저/같이 처리될 수 있는 키맵. 여기서 같은 키를 쓰는 기본 항목을 끈다.
@@ -329,7 +333,7 @@ def _update_gizmo_pref(_self, _context):
 
 
 def _draw_mode_ui(layout, prefs):
-    layout.label(text="뷰포트 조작 모드")
+    layout.label(text="Viewport Navigation")
     col = layout.column(align=True)
     col.prop(prefs, "nav_mode", expand=True)
     box = layout.box()
@@ -353,52 +357,52 @@ def _draw_mode_ui(layout, prefs):
     col.prop(prefs, "use_own_transform")
     sub = col.column(align=True)
     sub.active = prefs.use_own_transform and prefs.nav_mode != 'BLENDER'
-    sub.label(text="오브젝트·포즈 모드에서 축 고정선 없이 변환")
-    sub.label(text="에디트 모드·G/R/S 키는 Blender 변환")
+    sub.label(text="Object/Pose: no constraint lines")
+    sub.label(text="Edit mode, G/R/S: Blender")
 
 
 class DCCNavigationPreferences(bpy.types.AddonPreferences):
     bl_idname = __package__
 
     nav_mode: bpy.props.EnumProperty(
-        name="조작 모드",
-        description="뷰포트 마우스 조작 방식 (단축키는 아래에서 따로 켜고 끈다)",
+        name="Navigation Mode",
+        description="Viewport mouse navigation style (hotkeys are toggled separately)",
         items=_MODE_ITEMS,
         default='MAYA',
         update=_update_keys,
     )
     use_hotkeys: bpy.props.BoolProperty(
-        name="단축키 (QWER, 1/2)",
-        description="Q/W/E/R 툴 전환과 1/2 World/Local 전환. 조작 모드와 상관없이 따로 켜고 끈다",
+        name="Hotkeys (QWER, 1/2)",
+        description="Q/W/E/R tool switching and 1/2 World/Local orientation, independent of the navigation mode",
         default=True,
         update=_update_keys,
     )
     show_axis_overlay: bpy.props.BoolProperty(
-        name="DCC 기즈모 사용",
+        name="DCC Gizmo",
         description=(
-            "Move/Rotate/Scale 툴의 Blender 기즈모 대신, 대기 중과 변환 중 모양이 같은 기즈모를 쓴다.\n"
-            "변환 중에도 X/Y/Z 가 모두 계속 보인다"
+            "Replace Blender's Move/Rotate/Scale tool gizmo with one that looks the same while idle and while transforming.\n"
+            "All X/Y/Z handles stay visible during the transform"
         ),
         default=True,
         update=_update_gizmo_pref,
     )
     axis_overlay_size: bpy.props.IntProperty(
-        name="기즈모 크기 (px)",
+        name="Gizmo Size (px)",
         default=80,
         min=20,
         max=400,
     )
     use_own_transform: bpy.props.BoolProperty(
-        name="기즈모 자체 변환 (축 고정선 없음)",
+        name="Direct Transform (No Lines)",
         description=(
-            "Maya/Max 모드에서 기즈모를 잡으면 애드온이 직접 이동/회전/스케일해서 Blender 축 고정선이 나오지 않는다.\n"
-            "오브젝트·포즈 모드에만 적용. 끄면 Blender 변환(숫자 입력·스냅·비례 편집 등 지원)을 쓴다"
+            "In Maya/Max mode, gizmo drags are computed by the add-on so Blender's constraint lines are not drawn.\n"
+            "Object and Pose mode only. Turn off to use Blender's transform (numeric input, snapping, proportional editing)"
         ),
         default=True,
     )
     scale_sensitivity: bpy.props.FloatProperty(
-        name="스케일 감도",
-        description="기즈모로 스케일할 때 감도. 1.0 이면 기즈모 길이만큼 끌 때 +1배 (0.5 = 기본, 작을수록 둔함)",
+        name="Scale Sensitivity",
+        description="Gizmo scale sensitivity. At 1.0, dragging one gizmo length adds 1x (default 0.5, lower is less sensitive)",
         default=0.5,
         min=0.05,
         max=3.0,
@@ -415,7 +419,7 @@ class DCCNavigationPreferences(bpy.types.AddonPreferences):
         if self.nav_mode == 'MAYA' and inputs.use_mouse_emulate_3_button:
             box = layout.box()
             box.alert = True
-            box.label(text="Emulate 3 Button Mouse 가 켜져 있어 Alt+왼쪽 드래그가 겹칩니다.", icon='ERROR')
+            box.label(text="Emulate 3 Button Mouse is on and conflicts with Alt+Left drag.", icon='ERROR')
             box.prop(inputs, "use_mouse_emulate_3_button")
 
         row = layout.row()
@@ -423,14 +427,14 @@ class DCCNavigationPreferences(bpy.types.AddonPreferences):
         row.prop(self, "axis_overlay_size")
 
         box = layout.box()
-        box.label(text="Blender 내비게이션 설정 (선택)")
+        box.label(text="Blender Navigation Options (optional)")
         box.prop(inputs, "use_zoom_to_mouse")
         box.prop(inputs, "use_rotate_around_active")
 
         disabled = _conflict_items(_mode_combos(self.nav_mode, self.use_hotkeys), active_only=False)
         if disabled:
             box = layout.box()
-            box.label(text="겹쳐서 꺼 둔 기본 단축키 ({:d})".format(len(disabled)))
+            box.label(text="Disabled conflicting default shortcuts ({:d})".format(len(disabled)))
             col = box.column(align=True)
             for km, kmi in disabled:
                 col.label(text="{:s} : {:s}  ({:s})".format(km.name, _key_text(kmi), kmi.name or kmi.idname))
@@ -1047,13 +1051,13 @@ def _rot_value(owner):
 
 
 class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
-    """DCC 기즈모로 잡은 축을 따라 이동/회전/스케일 (축 고정선 없이)"""
+    """Move/rotate/scale along the grabbed DCC gizmo handle (without constraint lines)"""
     bl_idname = "dccnav.gizmo_transform"
-    bl_label = "DCC 기즈모 변환"
+    bl_label = "DCC Gizmo Transform"
     bl_options = {'REGISTER', 'UNDO', 'BLOCKING'}
 
     kind: bpy.props.EnumProperty(
-        items=(('MOVE', "이동", ""), ('ROTATE', "회전", ""), ('SCALE', "스케일", "")),
+        items=(('MOVE', "Move", ""), ('ROTATE', "Rotate", ""), ('SCALE', "Scale", "")),
         options={'SKIP_SAVE'},
     )
     # 0~2 = X/Y/Z 축. 그 밖은 핸들: H_CENTER(이동=화면 평면, 스케일=전체), H_VIEW_RING(회전 바깥 링),
@@ -1330,25 +1334,25 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
     def _header(self, context):
         if self.kind == 'MOVE':
             if self.axis < 3:
-                text = "이동 {:s}: {:.4f}".format("XYZ"[self.axis], self.value)
+                text = "Move {:s}: {:.4f}".format("XYZ"[self.axis], self.value)
             else:
-                name = "화면 평면" if self.axis == H_CENTER else ("YZ", "XZ", "XY")[self.axis - H_PLANE]
-                text = "이동 {:s}: {:.4f}  {:.4f}  {:.4f}".format(name, *self.value)
+                name = "View Plane" if self.axis == H_CENTER else ("YZ", "XZ", "XY")[self.axis - H_PLANE]
+                text = "Move {:s}: {:.4f}  {:.4f}  {:.4f}".format(name, *self.value)
         elif self.kind == 'ROTATE':
             if self.axis == H_TRACKBALL:
-                text = "자유 회전: {:.2f}°".format(math.degrees(self.value))
+                text = "Free Rotate: {:.2f}°".format(math.degrees(self.value))
             else:
-                name = "화면" if self.axis == H_VIEW_RING else "XYZ"[self.axis]
-                text = "회전 {:s}: {:+.2f}°".format(name, math.degrees(self.value))
+                name = "View" if self.axis == H_VIEW_RING else "XYZ"[self.axis]
+                text = "Rotate {:s}: {:+.2f}°".format(name, math.degrees(self.value))
         else:
             if self.axis == H_CENTER:
-                name = "전체"
+                name = "Uniform"
             elif self.axis >= H_PLANE:
                 name = ("YZ", "XZ", "XY")[self.axis - H_PLANE]
             else:
                 name = "XYZ"[self.axis]
-            text = "스케일 {:s}: ×{:.3f}".format(name, self.value)
-        text += "    Ctrl: 스냅   Shift: 정밀   우클릭/Esc: 취소"
+            text = "Scale {:s}: ×{:.3f}".format(name, self.value)
+        text += "    Ctrl: Snap   Shift: Precision   RMB/Esc: Cancel"
         context.area.header_text_set(text)
 
     # --- 연산자 ---------------------------------------------------------------
@@ -1547,7 +1551,7 @@ def _make_rotate_part_gizmo(part):
         "DCCNAV_GT_rotate_part{:d}".format(part),
         (bpy.types.Gizmo,),
         {
-            "__doc__": "DCC 회전 기즈모 잡는 영역 (부분 {:d})".format(part),
+            "__doc__": "DCC rotate gizmo hit area (part {:d})".format(part),
             "bl_idname": "DCCNAV_GT_rotate_part{:d}".format(part),
             "draw": lambda self, _context: None,
             "test_select": test_select,
