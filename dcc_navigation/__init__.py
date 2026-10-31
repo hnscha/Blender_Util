@@ -1243,14 +1243,18 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
     # --- 적용 ---------------------------------------------------------------
 
     def _apply(self, context, delta):
+        # delta 는 공통 행렬, 또는 대상마다 행렬을 돌려주는 함수(개별 원점 피봇).
+        per_item = callable(delta)
         for item in self.objects:
             o = item["obj"]
-            o.matrix_world = delta @ item["world"]
+            d = delta(item) if per_item else delta
+            o.matrix_world = d @ item["world"]
             item["prev"] = _apply_basis(o, o.matrix_basis.copy(), item["start"], item["prev"])
         for item in self.bones:
             pb = item["pb"]
             arm = item["arm"]
-            pose_m = arm.matrix_world.inverted() @ delta @ item["world"]
+            d = delta(item) if per_item else delta
+            pose_m = arm.matrix_world.inverted() @ d @ item["world"]
             basis = arm.convert_space(pose_bone=pb, matrix=pose_m, from_space='POSE', to_space='LOCAL')
             item["prev"] = _apply_basis(pb, basis, item["start"], item["prev"])
         if self.verts is not None:
@@ -1414,6 +1418,50 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
                     s3[r][col] += (f - 1.0) * a[r] * a[col]
         return to_c @ s3.to_4x4() @ from_c
 
+    def _item_axis(self, item, idx):
+        """개별 원점에서 쓸 축: Local 계열 좌표계면 대상 자신의 축, 아니면 공통 기즈모 축."""
+        if self.local_axes:
+            return item["world"].to_3x3().normalized().col[idx].normalized()
+        return self.rot.col[idx].normalized()
+
+    def _delta_for(self, item):
+        """
+        개별 원점(Individual Origins) 피봇: 대상마다 자기 원점(오브젝트 원점 / 본 머리)을 중심으로,
+        Local 이면 자기 축으로 변환한다 (손가락 여러 개를 한 번에 말 때처럼).
+        """
+        c = item["world"].translation.copy()
+        to_c = Matrix.Translation(c)
+        from_c = Matrix.Translation(-c)
+        if self.kind == 'MOVE':
+            if self.axis < 3:
+                return Matrix.Translation(self._item_axis(item, self.axis) * self.value)
+            return Matrix.Translation(self.value)
+        if self.kind == 'ROTATE':
+            if self.axis == H_TRACKBALL:
+                return to_c @ self.q_total.to_matrix().to_4x4() @ from_c
+            if self.axis < 3:
+                a = self._item_axis(item, self.axis)
+                # 대상 축이 기즈모 축과 반대 방향이면 같은 쪽으로 돌도록 부호를 맞춘다.
+                angle = self.value if a.dot(self.a) >= 0.0 else -self.value
+            else:
+                a, angle = self.a, self.value
+            return to_c @ Matrix.Rotation(angle, 4, a) @ from_c
+        f = self.value
+        if self.axis == H_CENTER:
+            return to_c @ Matrix.Scale(f, 4) @ from_c
+        s3 = Matrix.Identity(3)
+        if self.axis >= H_PLANE:
+            n = self._item_axis(item, self.axis - H_PLANE)
+            for r in range(3):
+                for col in range(3):
+                    s3[r][col] += (f - 1.0) * ((1.0 if r == col else 0.0) - n[r] * n[col])
+        else:
+            a = self._item_axis(item, self.axis)
+            for r in range(3):
+                for col in range(3):
+                    s3[r][col] += (f - 1.0) * a[r] * a[col]
+        return to_c @ s3.to_4x4() @ from_c
+
     def _publish(self):
         factors = [1.0, 1.0, 1.0]
         if self.kind == 'SCALE':
@@ -1474,6 +1522,10 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
         view_y = rv3d.view_rotation @ Vector((0.0, 1.0, 0.0))
         toward = rv3d.view_rotation @ Vector((0.0, 0.0, 1.0))
         self.center = center
+        self.rot = rot
+        # 개별 원점 피봇: 각자 제자리에서 변환. 기즈모는 Blender 처럼 선택 중간점에 둔다.
+        self.individual = context.scene.tool_settings.transform_pivot_point == 'INDIVIDUAL_ORIGINS'
+        self.local_axes = context.scene.transform_orientation_slots[0].type in {'LOCAL', 'GIMBAL', 'NORMAL'}
         if self.axis < 3:
             self.a = rot.col[self.axis].normalized()
         else:
@@ -1545,7 +1597,7 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
     def modal(self, context, event):
         if event.type in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE', 'LEFT_CTRL', 'RIGHT_CTRL', 'LEFT_SHIFT', 'RIGHT_SHIFT'}:
             self.value = self._value(context, event)
-            self._apply(context, self._delta())
+            self._apply(context, self._delta_for if self.individual else self._delta())
             self._publish()
             self._header(context)
             context.area.tag_redraw()
