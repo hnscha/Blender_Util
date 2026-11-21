@@ -1437,6 +1437,10 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
                     })
         elif mode == 'POSE':
             sel = set(context.selected_pose_bones or [])
+            # 개별 원점 회전은 자식도 각자 자기 축으로 돈다 (Max 바이패드 스파인 여러 개 회전과 같음).
+            # 이동·스케일은 부모를 따라 두 번 움직이지 않게 맨 위 본만 변환한다.
+            keep_children = (self.kind == 'ROTATE'
+                             and context.scene.tool_settings.transform_pivot_point == 'INDIVIDUAL_ORIGINS')
 
             def has_selected_parent(pb):
                 p = pb.parent
@@ -1447,7 +1451,7 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
                 return False
 
             for pb in sel:
-                if not has_selected_parent(pb):
+                if keep_children or not has_selected_parent(pb):
                     arm = pb.id_data
                     world = arm.matrix_world @ pb.matrix
                     basis = pb.matrix_basis.copy()
@@ -1630,8 +1634,9 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
         # SCALE: Maya 처럼 끈 거리에 비례한다. 기즈모 길이(px)/감도 만큼 끌면 +1배.
         # (잡은 지점까지 거리의 비율로 하면 가운데 근처를 잡았을 때 지나치게 민감해진다.)
         if self.axis == H_CENTER:
-            # 가운데 핸들: 전체(균일) 스케일. 중심에서 멀어지면 커지고 가까워지면 작아진다.
-            moved = (mouse - self.c2d).length - self.d0
+            # 가운데 핸들: 전체(균일) 스케일. Max 처럼 누른 자리에서 위·오른쪽으로 끌면 커지고 아래·왼쪽이면 작아진다.
+            d = mouse - self.press_s
+            moved = d.x + d.y
         else:
             moved = (mouse - self.c2d).dot(self.s2d) - self.d0
         factor = max(1.0 + moved / self.ref, 0.001)
@@ -1865,7 +1870,7 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
                 self.value = 0.0
         else:
             if self.axis == H_CENTER:
-                self.d0 = max((mouse - self.c2d).length, 4.0)
+                self.press_s = mouse.copy()
             else:
                 direction = self.a
                 if self.axis >= H_PLANE:
@@ -2061,6 +2066,10 @@ def _scale_pick(context, location):
     if axis is not None:
         return axis
     center, rot, length = frame
+    # 가운데(전체 스케일): 그려진 삼각형 안 + 중심에서 삼각형 꼭짓점 거리(화면 px) 안쪽 원 전체.
+    # 축이 화면을 향하면 삼각형이 납작해져 잡기 어려우므로 원으로 넓힌다 (사다리꼴은 그 바깥이라 겹치지 않음).
+    if (mouse - c2).length <= _prefs().axis_overlay_size * _SCALE_INNER:
+        return H_CENTER
     tri = [proj(w) for w in _scale_center_tri(center, rot, length)]
     if all(p is not None for p in tri) and _poly_contains(tri, mouse):
         return H_CENTER
