@@ -443,8 +443,8 @@ def _draw_mode_ui(layout, prefs):
     row.prop_enum(prefs, "pending_work_mode", 'RIGGING', text="Rigging", translate=False)
     sub = layout.column(align=True)
     if prefs.pending_work_mode == 'ANIMATION':
-        sub.label(text="Object/Pose: custom gizmo", translate=False)
-        sub.label(text="Edit mode (modeling): Blender gizmo", translate=False)
+        sub.label(text="Object/Pose/Edit (mesh, armature): custom gizmo", translate=False)
+        sub.label(text="G/R/S keys: Blender transform", translate=False)
     else:
         sub.label(text="Blender gizmo everywhere", translate=False)
         sub.label(text="Snap, numeric input, Auto IK", translate=False)
@@ -547,7 +547,7 @@ class DCCNavigationPreferences(bpy.types.AddonPreferences):
     pending_work_mode: bpy.props.EnumProperty(
         name="Work Mode (selected)",
         items=(
-            ('ANIMATION', "Animation", "Object/Pose mode: custom gizmo without constraint lines"),
+            ('ANIMATION', "Animation", "Object/Pose/Edit mode: custom gizmo without constraint lines"),
             ('RIGGING', "Rigging", "Blender's gizmo and transform everywhere"),
         ),
         default='ANIMATION',
@@ -580,7 +580,7 @@ class DCCNavigationPreferences(bpy.types.AddonPreferences):
         description="How gizmo drags are computed",
         items=(
             ('ANIMATION', "Animation",
-             "Object/Pose mode: the add-on computes gizmo drags, no constraint lines (Maya/Max mode only)"),
+             "Object/Pose/Edit (mesh, armature) mode: the add-on computes gizmo drags, no constraint lines (Maya/Max mode only)"),
             ('RIGGING', "Rigging",
              "Blender's transform everywhere: snapping, numeric input, Auto IK, mirror (constraint lines shown)"),
         ),
@@ -702,12 +702,12 @@ def _gizmo_enabled():
 
 def _custom_gizmo_here(context):
     """
-    여기서 DCC 기즈모를 쓸지. 애니메이션 작업(Work Mode = Animation)의 오브젝트·포즈 모드만.
-    모델링(에디트 모드)과 리깅(Work Mode = Rigging)은 Blender 기본 기즈모·변환을 그대로 쓴다.
+    여기서 DCC 기즈모를 쓸지. 애니메이션 작업(Work Mode = Animation)의 오브젝트·포즈·에디트(메쉬, 아마추어) 모드.
+    리깅(Work Mode = Rigging)과 그 밖의 에디트 모드(커브·격자 등)는 Blender 기본 기즈모·변환을 그대로 쓴다.
     """
     prefs = _prefs()
     return (prefs is not None and prefs.show_axis_overlay and prefs.work_mode == 'ANIMATION'
-            and context.mode in {'OBJECT', 'POSE'})
+            and context.mode in _GIZMO_MODES)
 
 
 def _active_tool_kind(context):
@@ -789,22 +789,25 @@ def _selection_points(context):
     pts = []
     active = None
 
-    if mode == 'EDIT_MESH' and obj is not None and obj.type == 'MESH':
-        bm = bmesh.from_edit_mesh(obj.data)
-        mw = obj.matrix_world
-        pts = [mw @ v.co for v in bm.verts if v.select]
-        act = bm.select_history.active
-        if isinstance(act, bmesh.types.BMVert):
-            active = mw @ act.co
-    elif mode == 'EDIT_ARMATURE' and obj is not None:
-        mw = obj.matrix_world
-        for b in obj.data.edit_bones:
-            if b.select_head:
-                pts.append(mw @ b.head)
-            if b.select_tail:
-                pts.append(mw @ b.tail)
-        if obj.data.edit_bones.active is not None:
-            active = mw @ obj.data.edit_bones.active.head
+    if mode == 'EDIT_MESH':
+        # 여러 오브젝트를 같이 편집할 때도 선택된 점을 모두 모은다.
+        for o in context.objects_in_mode_unique_data:
+            bm = bmesh.from_edit_mesh(o.data)
+            mw = o.matrix_world
+            pts += [mw @ v.co for v in bm.verts if v.select]
+            act = bm.select_history.active
+            if o == obj and isinstance(act, bmesh.types.BMVert):
+                active = mw @ act.co
+    elif mode == 'EDIT_ARMATURE':
+        for o in context.objects_in_mode_unique_data:
+            mw = o.matrix_world
+            for b in o.data.edit_bones:
+                if b.select_head:
+                    pts.append(mw @ b.head)
+                if b.select_tail:
+                    pts.append(mw @ b.tail)
+            if o == obj and o.data.edit_bones.active is not None:
+                active = mw @ o.data.edit_bones.active.head
     elif mode == 'POSE' and obj is not None:
         pts = [pb.id_data.matrix_world @ pb.head for pb in (context.selected_pose_bones or [])]
         if context.active_pose_bone is not None:
@@ -1272,14 +1275,14 @@ def _draw_angle_text():
 
 def _own_transform_on():
     """
-    기즈모 드래그를 애드온 자체 변환으로 할지. Maya/Max 모드 + 작업 모드 Animation + 오브젝트·포즈 모드일 때만.
-    에디트 모드와 Rigging 작업 모드는 숫자 입력·스냅·비례 편집·미러·Auto IK 같은 Blender 변환 기능이 필요해서
-    Blender 변환을 쓴다.
+    기즈모 드래그를 애드온 자체 변환으로 할지. Maya/Max 모드 + 작업 모드 Animation + 오브젝트·포즈·에디트(메쉬, 아마추어) 모드.
+    Rigging 작업 모드는 숫자 입력·스냅·비례 편집·미러·Auto IK 같은 Blender 변환 기능이 필요해서 Blender 변환을 쓴다.
+    에디트 모드에서도 그 기능이 필요하면 G/R/S 키(Blender 변환)를 쓴다.
     """
     prefs = _prefs()
     if prefs is None or prefs.work_mode != 'ANIMATION' or prefs.nav_mode not in {'MAYA', 'MAX'}:
         return False
-    return bpy.context.mode in {'OBJECT', 'POSE'}
+    return bpy.context.mode in _GIZMO_MODES
 
 
 def _closest_axis_param(center, a, origin, direction):
@@ -1459,25 +1462,30 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
                         "prev": _rot_value(pb),
                     })
         elif mode == 'EDIT_MESH':
-            obj = context.active_object
-            bm = bmesh.from_edit_mesh(obj.data)
-            mw = obj.matrix_world
-            self.verts = {
-                "obj": obj, "bm": bm, "mw": mw.copy(), "imw": mw.inverted(),
-                "items": [(v, mw @ v.co) for v in bm.verts if v.select],
-            }
+            # 같이 편집 중인 오브젝트마다 선택된 점과 그 월드 위치.
+            self.verts = []
+            for obj in context.objects_in_mode_unique_data:
+                bm = bmesh.from_edit_mesh(obj.data)
+                mw = obj.matrix_world
+                items = [(v, mw @ v.co) for v in bm.verts if v.select]
+                if items:
+                    # bm 을 들고 있어야 BMVert 가 살아 있다.
+                    self.verts.append({"obj": obj, "bm": bm, "imw": mw.inverted(), "items": items})
         elif mode == 'EDIT_ARMATURE':
-            obj = context.active_object
-            mw = obj.matrix_world
-            items = []
-            for eb in obj.data.edit_bones:
-                if eb.select_head or eb.select_tail:
-                    items.append((eb, eb.select_head, eb.select_tail, mw @ eb.head, mw @ eb.tail, eb.roll))
-            self.ebones = {"obj": obj, "mw": mw.copy(), "imw": mw.inverted(), "items": items}
+            self.ebones = []
+            for obj in context.objects_in_mode_unique_data:
+                mw = obj.matrix_world
+                items = []
+                for eb in obj.data.edit_bones:
+                    # 에디트 본 Lock 이 켜진 본은 Blender 변환처럼 움직이지 않는다.
+                    if (eb.select_head or eb.select_tail) and not eb.lock:
+                        items.append((eb, eb.select_head, eb.select_tail, mw @ eb.head, mw @ eb.tail,
+                                      eb.roll, mw @ eb.matrix))
+                if items:
+                    self.ebones.append({"imw": mw.inverted(), "items": items})
 
     def _has_targets(self):
-        return bool(self.objects or self.bones or (self.verts and self.verts["items"])
-                    or (self.ebones and self.ebones["items"]))
+        return bool(self.objects or self.bones or self.verts or self.ebones)
 
     # --- 적용 ---------------------------------------------------------------
 
@@ -1500,22 +1508,25 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
             peff = item["peff"]
             basis = peff.inverted_safe() @ d @ peff @ item["basis"]
             item["prev"] = _apply_basis(owner, basis, item["start"], item["prev"], keep)
-        if self.verts is not None:
-            m = self.verts["imw"] @ delta
-            for v, co in self.verts["items"]:
+        # 에디트 모드는 개별 원점 없이 공통 행렬만 온다 (invoke 에서 individual 을 끈다).
+        for group in self.verts or ():
+            m = group["imw"] @ delta
+            for v, co in group["items"]:
                 v.co = m @ co
-            bmesh.update_edit_mesh(self.verts["obj"].data, loop_triangles=False, destructive=False)
-        if self.ebones is not None:
-            imw = self.ebones["imw"]
-            for eb, sh, st, head, tail, roll in self.ebones["items"]:
-                if sh:
-                    eb.head = imw @ (delta @ head)
-                else:
-                    eb.head = imw @ head
-                if st:
+            bmesh.update_edit_mesh(group["obj"].data, loop_triangles=False, destructive=False)
+        for group in self.ebones or ():
+            imw = group["imw"]
+            for eb, sh, st, head, tail, roll, world in group["items"]:
+                if sh and st:
+                    # 본 전체가 선택됨: 머리·꼬리·롤을 같이 변환한다 (본 축으로 돌리면 롤이 바뀐다).
+                    m = imw @ delta @ world
+                    full = m.to_3x3().normalized().to_4x4()
+                    full.translation = m.translation
+                    eb.matrix = full
                     eb.tail = imw @ (delta @ tail)
-                else:
-                    eb.tail = imw @ tail
+                    continue
+                eb.head = imw @ (delta @ head) if sh else imw @ head
+                eb.tail = imw @ (delta @ tail) if st else imw @ tail
                 eb.roll = roll
         context.view_layer.update()
 
@@ -1780,7 +1791,9 @@ class DCCNAV_OT_gizmo_transform(bpy.types.Operator):
         self.center = center
         self.rot = rot
         # 개별 원점 피봇: 각자 제자리에서 변환. 기즈모는 Blender 처럼 선택 중간점에 둔다.
-        self.individual = context.scene.tool_settings.transform_pivot_point == 'INDIVIDUAL_ORIGINS'
+        # 에디트 모드는 개별 원점도 선택 중간점 기준으로 한 번에 변환한다.
+        self.individual = (context.scene.tool_settings.transform_pivot_point == 'INDIVIDUAL_ORIGINS'
+                           and not self.verts and not self.ebones)
         self.local_axes = context.scene.transform_orientation_slots[0].type in {'LOCAL', 'GIMBAL', 'NORMAL'}
         if self.axis < 3:
             self.a = rot.col[self.axis].normalized()

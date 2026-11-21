@@ -20,5 +20,5 @@ Blender 용 유틸리티 애드온 모음.
 
 | 폴더 | 이름 | 설명 |
 |---|---|---|
-| `dcc_navigation/` | DCC Navigation | 뷰포트 조작 모드 전환 (Blender 기본 / Maya·Unreal / 3ds Max). QWER 툴, 1/2 World/Local, 변환 중 기즈모 유지. 3D 뷰포트 N 패널 "DCC Nav" 탭. |
+| `dcc_navigation/` | DCC Navigation | 뷰포트 조작 모드 전환 (Blender 기본 / Maya·Unreal / 3ds Max). QWER 툴, 1/2 World/Local, 변환 중 기즈모 유지 (Object/Pose/Edit 모드). 3D 뷰포트 N 패널 "DCC Nav" 탭. |
 | `strict_lock/` | Strict Lock | 자물쇠 걸린 변환 채널을 정말 못 바꾸게 함 — 뷰포트 드래그, 숫자 칸 끌기·입력, 커브 에디터 편집, 잠긴 채널 새 키 모두 되돌림. 3D 뷰포트 N 패널 "Lock" 탭. |
