@@ -260,10 +260,11 @@ class Engines(unittest.TestCase):
             self.assertEqual(bpy.ops.anim_studio.delete_tool_channels(), {'FINISHED'})
 
     def test_shortcut_conflicts_and_ui_icons(self):
-        icons = bpy.types.UILayout.bl_rna.functions['operator'].parameters['icon'].enum_items.keys()
+        from anim_studio.ui import icons
         for buttons in hotkey_ops.BUTTONS.values():
             for button in buttons:
-                self.assertIn(button.icon, icons)
+                self.assertIn(button.icon, icons._previews)
+                self.assertIn(button.icon + '@2x', icons._previews)
         km = bpy.context.window_manager.keyconfigs.user.keymaps.new(name='Window')
         first = km.keymap_items.new('anim_studio.tool_orientation', 'A', 'PRESS', ctrl=True)
         first.properties.tool = 'MOVE'

@@ -17,11 +17,12 @@ TRANSFORMS = frozenset({'location', 'rotation', 'scale'})
 @contextmanager
 def preserve_current_pose(objects):
     """키 삭제의 재평가 뒤 같은 액션 사용자의 미기록 자세를 복원한다."""
+    objects = set(objects)
     actions = {obj.animation_data.action for obj in objects
                if obj.animation_data and obj.animation_data.action}
     saved = []
     for obj in bpy.data.objects:
-        if not obj.animation_data or obj.animation_data.action not in actions:
+        if obj not in objects and (not obj.animation_data or obj.animation_data.action not in actions):
             continue
         owners = [obj, *obj.pose.bones] if obj.type == 'ARMATURE' else [obj]
         for owner in owners:
@@ -149,7 +150,8 @@ def _remove_points(curve, start, end, *, outside=False):
     return len(indices)
 
 
-def write_keys(cb, data_path, index, frames, values, group, *, owners=None, time_owner=None):
+def write_keys(cb, data_path, index, frames, values, group, *, owners=None, time_owner=None,
+               native_owner=None, custom_property=None):
     """씬 프레임을 액션 시간으로 바꿔 벌크 기록한다. 반환값은 건너뛴 목록."""
     ensure_editable(cb.id_data)
     frames, values = list(frames), list(values)
@@ -160,12 +162,17 @@ def write_keys(cb, data_path, index, frames, values, group, *, owners=None, time
     if any(a >= b for a, b in zip(frames, frames[1:])):
         raise StudioError("프레임은 중복 없이 오름차순이어야 합니다.")
     owners = _owners(cb) if owners is None else owners
+    scene_frames = frames
     frames = _action_times(owners, frames, time_owner)
     if any(a >= b for a, b in zip(frames, frames[1:])):
         raise StudioError("액션 시간이 증가하는 NLA 구간에서 베이크해 주세요.")
     skipped = _skip(cb, data_path, index, owners)
     if skipped:
         return skipped
+    if native_owner is not None:
+        _write_native_keys(native_owner, cb, data_path, index, scene_frames, frames, values, group,
+                           custom_property)
+        return []
     curve = cb.fcurves.ensure(data_path, index=index, group_name=group)
     coords = _coordinates(curve)
     first, last = _interval(coords, frames[0], frames[-1])
@@ -185,6 +192,50 @@ def write_keys(cb, data_path, index, frames, values, group, *, owners=None, time
         curve.update_autoflags(obj)
         obj.update_tag(refresh={'OBJECT'})
     return []
+
+
+def _write_native_keys(obj, cb, path, index, scene_frames, action_frames, values, group, custom_property):
+    """UI 구간 작업: Undo에서 미기록 자세를 재평가하지 않는 기본 키 API."""
+    ad = obj.animation_data
+    curve = cb.fcurves.find(path, index=index)
+    old_frames = list(_coordinates(curve)[::2]) if curve is not None else []
+    removed = [f for f in old_frames if action_frames[0] <= f <= action_frames[-1]]
+    saved = custom_property[0][custom_property[1]] if custom_property else obj.path_resolve(path)[index]
+    preferences = bpy.context.preferences.edit
+    old_handle = preferences.keyframe_new_handle_type
+    preferences.keyframe_new_handle_type = 'AUTO_CLAMPED'
+
+    def put(frame, value):
+        if custom_property:
+            owner, prop = custom_property
+            owner[prop] = value
+        else:
+            obj.path_resolve(path)[index] = value
+        obj.keyframe_insert(path, index=-1 if custom_property else index, frame=frame, group=group)
+
+    def scene_time(frame):
+        return ad.nla_tweak_strip_time_to_scene(frame) if ad.use_tweak_mode else frame
+
+    try:
+        # 기본 삭제가 빈 F-커브를 제거하므로, 전체 교체 때는 임시 키 하나로
+        # 기존 커브의 모디파이어·그룹·외삽 속성 수명을 유지한다.
+        sentinel = None
+        if old_frames and len(removed) == len(old_frames):
+            upper = max(*old_frames, *action_frames)
+            sentinel = scene_time(upper + max(1.0, abs(upper) * 1e-5))
+            put(sentinel, saved)
+        for frame in removed:
+            obj.keyframe_delete(path, index=-1 if custom_property else index, frame=scene_time(frame))
+        for frame, value in zip(scene_frames, values):
+            put(frame, value)
+        if sentinel is not None:
+            obj.keyframe_delete(path, index=-1 if custom_property else index, frame=sentinel)
+    finally:
+        preferences.keyframe_new_handle_type = old_handle
+        if custom_property:
+            custom_property[0][custom_property[1]] = saved
+        else:
+            obj.path_resolve(path)[index] = saved
 
 
 def delete_keys(cb, data_path, index, start, end, *, time_owner=None):

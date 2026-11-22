@@ -24,6 +24,16 @@ class StudioOperator:
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
+    def description(cls, _context, properties):
+        for buttons in BUTTONS.values():
+            for button in buttons:
+                if button.operator == cls.bl_idname and all(
+                        getattr(properties, key) == value for key, value in button.properties.items()):
+                    return (cls.bl_description if cls.bl_description.split('\n', 1)[0] == button.label
+                            else button.label + '\n' + cls.bl_description)
+        return cls.bl_description
+
+    @classmethod
     def poll(cls, context):
         return context.area is not None and context.area.type == 'VIEW_3D'
 
@@ -483,49 +493,74 @@ class Button:
     keymaps: tuple = ('3D View',)
     alert: bool = False
     primary: bool = False
+    short: str = ""
 
 
 BUTTONS = {
     'KEY': (
-        Button('All Controls Key', 'anim_studio.key_all_controls', 'KEY_HLT', keymaps=('Pose', 'Object Mode'), primary=True),
-        Button('Selected Key', 'anim_studio.selected_key', 'KEYFRAME_HLT', keymaps=('Pose', 'Object Mode')),
-        Button('Set Key (Track Mode)', 'anim_studio.key_tool_channels', 'KEY_HLT', keymaps=('Pose', 'Object Mode')),
-        Button('Delete Key (Track Mode)', 'anim_studio.delete_tool_channels', 'KEY_DEHLT', keymaps=('Pose', 'Object Mode')),
-        Button('Delete Sel Keys', 'anim.keyframe_delete_v3d', 'KEY_DEHLT', keymaps=('Pose', 'Object Mode')),
-        Button('Delete Keys Outside Range', 'anim_studio.delete_keys_outside', 'TRASH', keymaps=('Pose', 'Object Mode'), alert=True),
-        Button('Delete All Timeline Keys', 'anim.keyframe_clear_v3d', 'TRASH', keymaps=('Pose', 'Object Mode'), alert=True),
+        Button('All Controls Key', 'anim_studio.key_all_controls', 'key_all', keymaps=('Pose', 'Object Mode'), primary=True, short='All'),
+        Button('Selected Key', 'anim_studio.selected_key', 'key_selected', keymaps=('Pose', 'Object Mode'), short='Sel'),
+        Button('Set Key (Track Mode)', 'anim_studio.key_tool_channels', 'key_track', keymaps=('Pose', 'Object Mode'), short='Track'),
+        Button('Delete Key (Track Mode)', 'anim_studio.delete_tool_channels', 'del_track', keymaps=('Pose', 'Object Mode'), short='Del'),
+        Button('Delete Sel Keys', 'anim.keyframe_delete_v3d', 'del_selected', keymaps=('Pose', 'Object Mode'), short='Sel'),
+        Button('Delete Keys Outside Range', 'anim_studio.delete_keys_outside', 'del_outside', keymaps=('Pose', 'Object Mode'), alert=True, short='Out'),
+        Button('Delete All Timeline Keys', 'anim.keyframe_clear_v3d', 'del_all', keymaps=('Pose', 'Object Mode'), alert=True, short='Clear'),
     ),
     'TRANSFORM': (
-        Button('Toggle World Local', 'anim_studio.toggle_orientation', 'ORIENTATION_GLOBAL'),
-        Button('Move World Local', 'anim_studio.tool_orientation', 'EMPTY_ARROWS', {'tool': 'MOVE'}),
-        Button('Rotate World Local', 'anim_studio.tool_orientation', 'ORIENTATION_GIMBAL', {'tool': 'ROTATE'}),
-        Button('Scale World Local', 'anim_studio.tool_orientation', 'FULLSCREEN_ENTER', {'tool': 'SCALE'}),
-        Button('Free Rotation', 'transform.trackball', 'ORIENTATION_GIMBAL'),
+        Button('Toggle World Local', 'anim_studio.toggle_orientation', 'toggle_world_local', short='Space'),
+        Button('Move World Local', 'anim_studio.tool_orientation', 'move_world_local', {'tool': 'MOVE'}, short='Move'),
+        Button('Rotate World Local', 'anim_studio.tool_orientation', 'rotate_world_local', {'tool': 'ROTATE'}, short='Rot'),
+        Button('Scale World Local', 'anim_studio.tool_orientation', 'scale_world_local', {'tool': 'SCALE'}, short='Scale'),
+        Button('Free Rotation', 'transform.trackball', 'free_rotation', short='Free'),
     ),
     'SELECT': (
-        Button('Select Opposite', 'pose.select_mirror', 'MOD_MIRROR', keymaps=('Pose',)),
-        Button('Select COM', 'anim_studio.select_com', 'PIVOT_MEDIAN', keymaps=('Pose', 'Object Mode')),
-        Button('Select Next Armature', 'anim_studio.select_next_armature', 'ARMATURE_DATA'),
-        Button('Choose Armature', 'anim_studio.choose_armature', 'VIEWZOOM'),
-        Button('Easy Parent', 'object.parent_set', 'CON_CHILDOF', keymaps=('Object Mode',)),
+        Button('Select Opposite', 'pose.select_mirror', 'select_opposite', keymaps=('Pose',), short='Flip'),
+        Button('Select COM', 'anim_studio.select_com', 'select_com', keymaps=('Pose', 'Object Mode'), short='COM'),
+        Button('Select Next Armature', 'anim_studio.select_next_armature', 'next_armature', short='Next'),
+        Button('Choose Armature', 'anim_studio.choose_armature', 'choose_armature', short='Find'),
+        Button('Easy Parent', 'object.parent_set', 'easy_parent', keymaps=('Object Mode',), short='Link'),
     ),
     'DISPLAY': (
-        Button('Toggle Geometry', 'anim_studio.toggle_type_visibility', 'MESH_DATA', {'kind': 'MESH'}),
-        Button('Toggle Non Geometry', 'anim_studio.toggle_type_visibility', 'OUTLINER_OB_EMPTY', {'kind': 'NON_MESH'}),
-        Button('Toggle Bones', 'anim_studio.toggle_type_visibility', 'ARMATURE_DATA', {'kind': 'ARMATURE'}),
-        Button('Toggle Helpers', 'anim_studio.toggle_type_visibility', 'EMPTY_DATA', {'kind': 'EMPTY'}),
-        Button('Toggle Shapes', 'anim_studio.toggle_type_visibility', 'CURVE_DATA', {'kind': 'CURVE'}),
-        Button('Toggle Cameras', 'anim_studio.toggle_type_visibility', 'CAMERA_DATA', {'kind': 'CAMERA'}),
+        Button('Toggle Geometry', 'anim_studio.toggle_type_visibility', 'vis_geometry', {'kind': 'MESH'}, short='Mesh'),
+        Button('Toggle Non Geometry', 'anim_studio.toggle_type_visibility', 'vis_non_geometry', {'kind': 'NON_MESH'}, short='Other'),
+        Button('Toggle Bones', 'anim_studio.toggle_type_visibility', 'vis_bones', {'kind': 'ARMATURE'}, short='Bones'),
+        Button('Toggle Helpers', 'anim_studio.toggle_type_visibility', 'vis_helpers', {'kind': 'EMPTY'}, short='Help'),
+        Button('Toggle Shapes', 'anim_studio.toggle_type_visibility', 'vis_shapes', {'kind': 'CURVE'}, short='Curve'),
+        Button('Toggle Cameras', 'anim_studio.toggle_type_visibility', 'vis_cameras', {'kind': 'CAMERA'}, short='Cam'),
     ),
     'VIEW': (
-        Button('View Left/Right', 'anim_studio.view_flip', 'AXIS_SIDE', {'axis': 'X'}),
-        Button('View Top/Bottom', 'anim_studio.view_flip', 'AXIS_TOP', {'axis': 'Z'}),
-        Button('View Front/Back', 'anim_studio.view_flip', 'AXIS_FRONT', {'axis': 'Y'}),
-        Button('Toggle Safe Frames', 'anim_studio.toggle_safe_areas', 'VIEW_CAMERA'),
-        Button('Toggle Thirds Guide', 'anim_studio.toggle_thirds', 'GRID'),
-        Button('Easy Set 640x360', 'anim_studio.easy_resolution', 'OUTPUT'),
-        Button('Toggle Pose Library', 'wm.context_toggle', 'ASSET_MANAGER', {'data_path': 'space_data.show_region_asset_shelf'}),
-        Button('Focus Anim Studio', 'anim_studio.focus_panel', 'MENU_PANEL'),
+        Button('View Left/Right', 'anim_studio.view_flip', 'view_left_right', {'axis': 'X'}, short='L/R'),
+        Button('View Top/Bottom', 'anim_studio.view_flip', 'view_top_bottom', {'axis': 'Z'}, short='T/B'),
+        Button('View Front/Back', 'anim_studio.view_flip', 'view_front_back', {'axis': 'Y'}, short='F/B'),
+        Button('Toggle Safe Frames', 'anim_studio.toggle_safe_areas', 'safe_frames', short='Safe'),
+        Button('Toggle Thirds Guide', 'anim_studio.toggle_thirds', 'thirds_guide', short='Third'),
+        Button('Easy Set 640x360', 'anim_studio.easy_resolution', 'easy_resolution', short='640'),
+        Button('Toggle Pose Library', 'wm.context_toggle', 'pose_library', {'data_path': 'space_data.show_region_asset_shelf'}, short='Pose'),
+        Button('Focus Anim Studio', 'anim_studio.focus_panel', 'focus_panel', short='Panel'),
+    ),
+    'POSE_TOOLS': (
+        Button('Copy', 'anim_studio.pose_copy', 'pose_library', keymaps=('Pose',), short='Copy'),
+        Button('Paste', 'anim_studio.pose_paste', 'pose_library', keymaps=('Pose',), short='Paste'),
+        Button('Paste Opposite', 'anim_studio.pose_paste_opposite', 'select_opposite', keymaps=('Pose',), short='Opp'),
+        Button('Paste Range', 'anim_studio.pose_paste_range', 'pose_library', keymaps=('Pose',), short='Range'),
+        Button('Mirror Pose', 'anim_studio.mirror_pose', 'select_opposite', keymaps=('Pose',), short='Mir'),
+        Button('Mirror Range', 'anim_studio.mirror_range', 'select_opposite', keymaps=('Pose',), short='Range'),
+        Button('First Half → Second Half', 'anim_studio.mirror_loop', 'select_opposite', {'half': 'FIRST'}, keymaps=('Pose',), short='1→2'),
+        Button('Second Half → First Half', 'anim_studio.mirror_loop', 'select_opposite', {'half': 'SECOND'}, keymaps=('Pose',), short='2→1'),
+        Button('Mirror Single Frame', 'anim_studio.mirror_loop_single', 'select_opposite', keymaps=('Pose',), short='Frame'),
+        Button('Tween…', 'anim_studio.tween', 'free_rotation', keymaps=('Pose',), short='Tween'),
+        Button('Tween 50', 'anim_studio.tween_set', 'free_rotation', {'factor': 0.5}, keymaps=('Pose',), short='50'),
+        Button('Key Match Prev', 'anim_studio.key_match', 'key_track', {'direction': 'PREV'}, keymaps=('Pose',), short='Prev'),
+        Button('Key Match Next', 'anim_studio.key_match', 'key_track', {'direction': 'NEXT'}, keymaps=('Pose',), short='Next'),
+        Button('Create Temp Pivot', 'anim_studio.temp_pivot_create', 'vis_helpers', keymaps=('Pose',), short='Pivot'),
+        Button('Apply Temp Pivot', 'anim_studio.temp_pivot_apply', 'vis_helpers', short='Apply'),
+        Button('Bake Temp Pivot', 'anim_studio.temp_pivot_bake', 'vis_helpers', short='Bake'),
+        Button('Delete Temp Pivot', 'anim_studio.temp_pivot_delete', 'vis_helpers', short='Del'),
+        Button('Lock Range', 'anim_studio.world_lock_range', 'toggle_world_local', keymaps=('Pose',), short='Lock'),
+        Button('Set from Selection', 'anim_studio.align_set', 'move_world_local', short='Set'),
+        Button('Align Now', 'anim_studio.align_now', 'move_world_local', short='Now'),
+        Button('Align Range', 'anim_studio.align_range', 'move_world_local', short='Range'),
+        Button('Delete Pose Record', 'anim_studio.pose_history_delete', 'pose_library', short='Del'),
     ),
 }
 

@@ -2,6 +2,7 @@
 from .errors import StudioError
 from dataclasses import dataclass
 from time import perf_counter
+from math import floor, isfinite
 
 import bpy
 from mathutils import Euler, Quaternion
@@ -53,11 +54,12 @@ def _continuous_rotation(pb, previous):
     return 'rotation_euler', rotation, rotation
 
 
-def bake(arm, bones, frames, target_fn=None, channels=fcurve.TRANSFORMS, after_measure=None):
+def bake(arm, bones, frames, target_fn=None, channels=fcurve.TRANSFORMS, after_measure=None,
+         *, existing_properties_only=False, preserve_undo=False):
     started = perf_counter()
     frames = list(frames)
-    if not frames or any(type(frame) is not int for frame in frames):
-        raise StudioError("베이크 프레임은 비어 있지 않은 정수 목록이어야 합니다.")
+    if not frames or any(not isinstance(frame, (int, float)) or not isfinite(frame) for frame in frames):
+        raise StudioError("베이크 프레임은 비어 있지 않은 유한한 숫자 목록이어야 합니다.")
     if any(a >= b for a, b in zip(frames, frames[1:])):
         raise StudioError("베이크 프레임은 중복 없이 오름차순이어야 합니다.")
     if not channels or not set(channels) <= fcurve.TRANSFORMS:
@@ -94,7 +96,7 @@ def bake(arm, bones, frames, target_fn=None, channels=fcurve.TRANSFORMS, after_m
             # 현재 한 장은 frame_set 없이 아직 키를 찍지 않은 자세를 측정한다.
             for frame in frames:
                 if not single_current:
-                    scene.frame_set(frame)
+                    scene.frame_set(floor(frame), subframe=frame - floor(frame))
                 active, excluded = active_mode_controls(arm, names, None if single_current else frame)
                 skipped.extend(entry for entry in excluded if entry not in skipped)
                 frame_names = []
@@ -137,7 +139,7 @@ def bake(arm, bones, frames, target_fn=None, channels=fcurve.TRANSFORMS, after_m
             last_sample = {}
             for frame_index, (frame, pose) in enumerate(zip(frames, measured)):
                 if not single_current:
-                    scene.frame_set(frame)
+                    scene.frame_set(floor(frame), subframe=frame - floor(frame))
                 # 각 프레임의 원래 미기록 성분을 복원한 뒤 깊이별로 갱신한다.
                 snapshot.apply(arm, pose, writable=writable, frame=None if single_current else frame)
                 for name in pose:
@@ -153,6 +155,8 @@ def bake(arm, bones, frames, target_fn=None, channels=fcurve.TRANSFORMS, after_m
                                 samples.setdefault((pb.name, path, index), []).append((frame_index, frame, value))
                     for prop, value in pose.custom_properties.get(pb.name, {}).items():
                         path = pb.path_from_id() + '["' + bpy.utils.escape_identifier(prop) + '"]'
+                        if existing_properties_only and (cb is None or cb.fcurves.find(path, index=0) is None):
+                            continue
                         samples.setdefault((pb.name, path, 0), []).append((frame_index, frame, value))
                         custom_properties[(pb.name, path, 0)] = (pb, prop)
             if samples:
@@ -170,7 +174,9 @@ def bake(arm, bones, frames, target_fn=None, channels=fcurve.TRANSFORMS, after_m
                             arm, path, index, run[0][2], name, cb=cb, owners=owners,
                             custom_property=custom_properties.get((name, path, index))) if single_current else
                             fcurve.write_keys(cb, path, index, [e[1] for e in run], [e[2] for e in run],
-                                              name, owners=owners, time_owner=arm))
+                                              name, owners=owners, time_owner=arm,
+                                              native_owner=arm if preserve_undo else None,
+                                              custom_property=custom_properties.get((name, path, index))))
                         if rejected:
                             skipped.extend((name, reason) for _owner, reason in rejected)
                         else:

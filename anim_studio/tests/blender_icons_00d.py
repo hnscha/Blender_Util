@@ -16,6 +16,15 @@ print('DISPLAY_SCALE', bpy.context.preferences.system.ui_scale, bpy.context.pref
 if bpy.app.background:
     raise RuntimeError('별도 GUI 프로세스로 실행해 주세요.')
 anim_studio.register()
+from anim_studio.ui import icons
+from anim_studio.ops.hotkey_ops import BUTTONS
+assert len(icons._previews) == 66
+for buttons in BUTTONS.values():
+    for button in buttons:
+        assert icons.icon_id(button.icon) > 0
+        assert icons._previews[button.icon + '@2x'].icon_id > 0
+        assert len(icons._previews[button.icon].image_pixels) == 32 * 32
+        assert len(icons._previews[button.icon + '@2x'].image_pixels) == 64 * 64
 bpy.context.preferences.view.show_splash = False
 area = next(a for a in bpy.context.screen.areas if a.type == 'VIEW_3D')
 with bpy.context.temp_override(area=area):
@@ -32,6 +41,10 @@ def finish():
     path = str(Path(tempfile.gettempdir()) / ('anim_studio_icons_00d_' + stage + '.png'))
     bpy.ops.screen.screenshot(filepath=path)
     print('ICONS_SCREENSHOT', path, flush=True)
+    anim_studio.unregister()
+    assert icons._previews is None
+    anim_studio.register()
+    assert len(icons._previews) == 66
     anim_studio.unregister()
     print('ICONS_UNREGISTER_OK', flush=True)
     bpy.ops.wm.quit_blender()

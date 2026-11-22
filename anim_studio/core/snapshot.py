@@ -7,7 +7,7 @@ import bpy
 from mathutils import Matrix
 
 from .context import active_mode_controls, bone_depth, mode_skip_message, ordered_bones
-from .fcurve import transform_channels
+from .fcurve import channel_skip_reason, transform_channels
 
 
 class PoseTargets(dict):
@@ -70,6 +70,15 @@ def apply(arm, snap, bones=None, space=None, *, writable=None, frame=None):
                            if (path, index) not in writable[pb.name]] for pb in targets}
                  if writable is not None else {})
     inverse = arm.matrix_world.inverted() if space == 'WORLD' else None
+    # 속성이 부모/컨스트레인트 평가에 영향을 줄 수 있어 행렬보다 먼저 반영한다.
+    for pb in targets:
+        for name, value in records[pb.name]["properties"].items():
+            path = pb.path_from_id() + '["' + bpy.utils.escape_identifier(name) + '"]'
+            if channel_skip_reason(arm, path, 0) is None:
+                pb[name] = value
+    if any(records[pb.name]['properties'] for pb in targets):
+        arm.update_tag(refresh={'OBJECT'})
+        bpy.context.view_layer.update()
     previous_depth = None
     for pb in targets:
         depth = bone_depth(pb)
@@ -81,8 +90,6 @@ def apply(arm, snap, bones=None, space=None, *, writable=None, frame=None):
             pb.matrix = inverse @ matrices[pb.name]
         for prop, index, value in preserved.get(pb.name, ()):
             getattr(pb, prop)[index] = value
-        for name, value in records[pb.name]["properties"].items():
-            pb[name] = value
         previous_depth = depth
     arm.update_tag(refresh={'OBJECT'})
     bpy.context.view_layer.update()

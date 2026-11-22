@@ -45,18 +45,29 @@ def _side(arm, name):
 
 def mirror_pose(arm, bones, mode='SWAP'):
     """레스트 축으로 보정한 LOCAL basis 목표. 부모/MCH 평가 순서와 무관하다."""
-    if mode not in {'SWAP', 'LEFT_TO_RIGHT', 'RIGHT_TO_LEFT'}:
-        raise StudioError("지원하지 않는 미러 모드입니다.")
     mapping = pairs(arm)
     sources = set(bones)
     sources.update(mapping[name] for name in tuple(sources))
-    active, skipped = active_mode_controls(arm, sorted(sources))
+    return mirror_matrices(arm, {name: arm.pose.bones[name].matrix_basis for name in sources}, mode,
+                           properties={name: numeric_properties(arm.pose.bones[name]) for name in sources})
+
+
+def mirror_matrices(arm, matrices, mode='SWAP', *, properties=None, frame=None, source_frame=None):
+    """저장한 LOCAL basis도 현재 포즈와 같은 레스트 보정식으로 반사한다."""
+    if mode not in {'SWAP', 'LEFT_TO_RIGHT', 'RIGHT_TO_LEFT'}:
+        raise StudioError("지원하지 않는 미러 모드입니다.")
+    mapping = pairs(arm)
+    sources = set(matrices)
+    active, skipped = active_mode_controls(arm, sorted(sources | {mapping[n] for n in sources}), frame)
     active = set(active)
+    source_active, source_skipped = active_mode_controls(arm, sorted(sources),
+                                                        frame if source_frame is None else source_frame)
+    skipped.extend(entry for entry in source_skipped if entry not in skipped)
     reflection = Matrix.Diagonal((-1.0, 1.0, 1.0))
-    matrices, properties = {}, {}
+    output, custom = {}, {}
     for name in sorted(sources):
         partner = mapping[name]
-        if name not in active or partner not in active:
+        if name not in source_active or partner not in active:
             continue
         if mode != 'SWAP':
             if name == partner:
@@ -69,6 +80,6 @@ def mirror_pose(arm, bones, mode='SWAP'):
         source, target = arm.pose.bones[name], arm.pose.bones[partner]
         basis_map = (target.bone.matrix_local.to_3x3().inverted() @ reflection
                      @ source.bone.matrix_local.to_3x3()).to_4x4()
-        matrices[partner] = basis_map @ source.matrix_basis @ basis_map.inverted()
-        properties[partner] = numeric_properties(source)
-    return PoseTargets(matrices, properties, space='LOCAL', skipped=skipped)
+        output[partner] = basis_map @ Matrix(matrices[name]) @ basis_map.inverted()
+        custom[partner] = (properties or {}).get(name, {}).copy()
+    return PoseTargets(output, custom, space='LOCAL', skipped=skipped)
