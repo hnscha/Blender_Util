@@ -1,0 +1,12 @@
+schema_version = "1.0.0"
+
+id = "anim_studio"
+version = "0.1.0"
+name = "Anim Studio"
+tagline = "애니메이션 편의 도구"
+maintainer = "HS"
+type = "add-on"
+
+blender_version_min = "5.0.0"
+
+license = ["SPDX:GPL-3.0-or-later"]

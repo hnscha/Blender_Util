@@ -2,3 +2,4 @@
 __pycache__/
 dist/
 *.pyc
+_codex_*.md
