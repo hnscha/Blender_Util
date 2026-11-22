@@ -23,3 +23,11 @@ Blender 용 유틸리티 애드온 모음.
 | `dcc_navigation/` | DCC Navigation | 뷰포트 조작 모드 전환 (Blender 기본 / Maya·Unreal / 3ds Max). QWER 툴, 1/2 World/Local, 변환 중 기즈모 유지 (Object/Pose/Edit 모드). 3D 뷰포트 N 패널 "DCC Nav" 탭. |
 | `strict_lock/` | Strict Lock | 자물쇠 걸린 변환 채널을 정말 못 바꾸게 함 — 뷰포트 드래그, 숫자 칸 끌기·입력, 커브 에디터 편집, 잠긴 채널 새 키 모두 되돌림. 3D 뷰포트 N 패널 "Lock" 탭. |
 | `anim_studio/` | Anim Studio | 애니메이터 편의 도구(개발 중, 0단계). 베이크·스냅샷·임시 객체·미러 공통 엔진 + 단축키 지정용 버튼 묶음. 3D 뷰포트 N 패널 "Anim Studio" 탭. 진행 기록은 `anim_studio/docs/진행상황_하네스.md`. |
+
+## Strict Lock 성능 수정 검토 기록 (2026-11-23)
+
+- 잠금 배열의 반복 RNA 조회를 줄이고, 잠기지 않았고 이전 snapshot도 없는 본의 불필요한 채널/애니메이션 조회를 생략했다. 지속 캐시는 사용하지 않는다.
+- 이전 snapshot이 있는 본은 unlock 시 F-Curve 잠금 해제와 snapshot 삭제를 유지한다. 등록 handler와 snapshot 형식은 바꾸지 않았다.
+- `tests/strict_lock_regression.py -- regression`: background Blender에서 기존/수정본 각각 26개 값·커브·키·unlock/relock·driver·회전모드·NLA·Undo 검사를 실행한다. 기준 소스는 수정 전 Git blob에서 읽는다.
+- 1,682본 사본의 콜백 중앙값 약 8.8→5.2ms. 화면 그리기/실제 입력 지연을 포함한 수치는 아니다. `tests/strict_lock_benchmark_*.json` 참조.
+- 수정 파일: `strict_lock/__init__.py`, 독립 검증 파일: `tests/strict_lock_regression.py`. 사용자의 마감 지시로 코드·검증 기록을 로컬 커밋한다. 릴리스/푸시는 하지 않는다.

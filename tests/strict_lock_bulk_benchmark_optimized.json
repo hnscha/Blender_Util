@@ -1,0 +1,29 @@
+{
+  "variant": "optimized",
+  "benchmark": {
+    "Ctrl_C_HeadSquash_02": {
+      "update": {
+        "n": 50,
+        "median_ms": 17.51625002361834,
+        "p95_ms": 19.51859996188432
+      },
+      "callback": {
+        "n": 50,
+        "median_ms": 5.147299962118268,
+        "p95_ms": 5.856600007973611
+      }
+    },
+    "Ctrl_L_WingHand": {
+      "update": {
+        "n": 50,
+        "median_ms": 17.59515004232526,
+        "p95_ms": 19.36450006905943
+      },
+      "callback": {
+        "n": 50,
+        "median_ms": 5.17240003682673,
+        "p95_ms": 5.36329997703433
+      }
+    }
+  }
+}

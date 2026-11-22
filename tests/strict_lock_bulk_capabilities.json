@@ -1,0 +1,87 @@
+{
+  "version": "5.2.2 LTS",
+  "bone_count": 1682,
+  "buffers": {
+    "bytearray": {
+      "lock_location": {
+        "supported": true,
+        "equal": true,
+        "locked_count": 69
+      },
+      "lock_scale": {
+        "supported": true,
+        "equal": true,
+        "locked_count": 455
+      },
+      "lock_rotation": {
+        "supported": true,
+        "equal": true,
+        "locked_count": 68
+      },
+      "lock_rotations_4d": {
+        "supported": true,
+        "equal": true,
+        "locked_count": 1682
+      },
+      "lock_rotation_w": {
+        "supported": true,
+        "equal": true,
+        "locked_count": 20
+      }
+    },
+    "b": {
+      "lock_location": {
+        "supported": true,
+        "equal": true,
+        "locked_count": 69
+      },
+      "lock_scale": {
+        "supported": true,
+        "equal": true,
+        "locked_count": 455
+      },
+      "lock_rotation": {
+        "supported": true,
+        "equal": true,
+        "locked_count": 68
+      },
+      "lock_rotations_4d": {
+        "supported": true,
+        "equal": true,
+        "locked_count": 1682
+      },
+      "lock_rotation_w": {
+        "supported": true,
+        "equal": true,
+        "locked_count": 20
+      }
+    },
+    "i": {
+      "lock_location": {
+        "supported": true,
+        "equal": true,
+        "locked_count": 69
+      },
+      "lock_scale": {
+        "supported": true,
+        "equal": true,
+        "locked_count": 455
+      },
+      "lock_rotation": {
+        "supported": true,
+        "equal": true,
+        "locked_count": 68
+      },
+      "lock_rotations_4d": {
+        "supported": true,
+        "equal": true,
+        "locked_count": 1682
+      },
+      "lock_rotation_w": {
+        "supported": true,
+        "equal": true,
+        "locked_count": 20
+      }
+    }
+  }
+}

@@ -28,35 +28,42 @@ _recent = []          # 최근에 막은 기록 (최대 20개)
 # -----------------------------------------------------------------------------
 # 잠긴 채널 찾기
 
-def _channels(owner):
+def _channels(owner, include_unlocked=True):
     """(data_path 끝부분, index, 잠김 여부) 목록. 회전은 회전 모드에 맞는 속성."""
+    # RNA 배열을 축마다 다시 찾지 않는다. 콜백 간 캐시는 두지 않아 잠금 변경이
+    # 즉시 반영되며, 새 소유자는 잠긴 채널만 만들어도 된다.
+    location = owner.lock_location[:]
+    scale = owner.lock_scale[:]
+    rotation = owner.lock_rotation[:]
+    mode = owner.rotation_mode
+    four_d = mode in {'QUATERNION', 'AXIS_ANGLE'}
+    locked_w = four_d and owner.lock_rotations_4d and owner.lock_rotation_w
+    if not include_unlocked and not (any(location) or any(scale) or any(rotation) or locked_w):
+        return ()
     out = []
     for i in range(3):
-        out.append(("location", i, owner.lock_location[i]))
-        out.append(("scale", i, owner.lock_scale[i]))
-    mode = owner.rotation_mode
-    if mode == 'QUATERNION':
-        four_d = owner.lock_rotations_4d
-        out.append(("rotation_quaternion", 0, four_d and owner.lock_rotation_w))
-        for i in range(3):
-            out.append(("rotation_quaternion", i + 1, owner.lock_rotation[i]))
-    elif mode == 'AXIS_ANGLE':
-        four_d = owner.lock_rotations_4d
-        out.append(("rotation_axis_angle", 0, four_d and owner.lock_rotation_w))
-        for i in range(3):
-            out.append(("rotation_axis_angle", i + 1, owner.lock_rotation[i]))
-    else:
-        for i in range(3):
-            out.append(("rotation_euler", i, owner.lock_rotation[i]))
+        if include_unlocked or location[i]:
+            out.append(("location", i, location[i]))
+        if include_unlocked or scale[i]:
+            out.append(("scale", i, scale[i]))
+    path = {'QUATERNION': "rotation_quaternion", 'AXIS_ANGLE': "rotation_axis_angle"}.get(mode, "rotation_euler")
+    if four_d and (include_unlocked or locked_w):
+        out.append((path, 0, locked_w))
+    offset = 1 if four_d else 0
+    for i in range(3):
+        if include_unlocked or rotation[i]:
+            out.append((path, i + offset, rotation[i]))
     return out
 
 
-def _owners():
+def _owners(only_ids=None):
     """(소유자 키, 소유자, ID(애니메이션 데이터를 가진 오브젝트), data_path 앞부분) 목록."""
     scene = bpy.context.scene
     if scene is None:
         return
     for obj in scene.objects:
+        if only_ids is not None and obj.name not in only_ids:
+            continue
         yield ("OB", obj.name), obj, obj, ""
         if obj.type == 'ARMATURE' and obj.pose is not None:
             for pb in obj.pose.bones:
@@ -161,7 +168,7 @@ def recapture_all():
     if not _enabled():
         return
     for key, owner, id_obj, prefix in _owners():
-        for path, index, locked in _channels(owner):
+        for path, index, locked in _channels(owner, include_unlocked=False):
             if locked:
                 _capture(key, owner, id_obj, prefix, path, index)
 
@@ -182,17 +189,22 @@ def _enforce(only_ids=None):
     only_ids: 이번에 바뀐 오브젝트 이름 집합 (None 이면 전부 검사)."""
     changed = False
     seen = set()
-    remove_new_keys = _prefs().remove_new_keys
+    prefs = _prefs()
+    remove_new_keys = prefs.remove_new_keys
+    # 이전 snapshot이 있는 소유자는 모두 확인해 unlock 시 F-Curve 잠금을 푼다.
+    # 매번 새로 만들므로 Undo/load 및 driver/rotation mode 변경에 stale cache가 없다.
+    tracked_owners = {sk[0] for sk in _snap}
     lookups = {}
     frame = bpy.context.scene.frame_current + bpy.context.scene.frame_subframe
-    for key, owner, id_obj, prefix in _owners():
-        if only_ids is not None and id_obj.name not in only_ids:
+    for key, owner, id_obj, prefix in _owners(only_ids):
+        channels = _channels(owner, include_unlocked=key in tracked_owners)
+        if not channels:
             continue
         lk = lookups.get(id_obj.name)
         if lk is None:
             lk = lookups[id_obj.name] = _anim_lookup(id_obj)
         fcs, drv, plain = lk
-        for path, index, locked in _channels(owner):
+        for path, index, locked in channels:
             sk = (key, path, index)
             if not locked:
                 if sk in _snap:
@@ -241,7 +253,7 @@ def _enforce(only_ids=None):
                     _restore_keys(fc, entry["keys"])
                     _report("{:s} {:s}[{:d}] is locked — curve edit undone".format(name, path, index))
                     changed = True
-                if _prefs().lock_fcurves and not fc.lock:
+                if prefs.lock_fcurves and not fc.lock:
                     fc.lock = True
                 # 키가 있어도 칸에서 값만 바꾸면 (키 안 찍고) 화면이 바뀐다: 커브 값으로 되돌린다.
                 if plain and not fc.mute:
