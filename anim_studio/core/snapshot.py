@@ -49,7 +49,7 @@ def capture(arm, bones, space='LOCAL'):
     }
 
 
-def apply(arm, snap, bones=None, space=None, *, writable=None, frame=None):
+def apply(arm, snap, bones=None, space=None, *, writable=None, frame=None, current_mode_only=True):
     """writable 지정 시 그 밖의 변환 성분은 적용 직전 값으로 보존한다."""
     if isinstance(snap, PoseTargets):
         records = {name: {"matrix": matrix,
@@ -61,7 +61,8 @@ def apply(arm, snap, bones=None, space=None, *, writable=None, frame=None):
     space = stored_space if space is None else space
     if space != stored_space or space not in {'LOCAL', 'WORLD'}:
         raise StudioError("스냅샷에 저장된 공간과 적용 공간이 다릅니다.")
-    names, skipped = active_mode_controls(arm, records if bones is None else bones, frame)
+    names = list(records if bones is None else bones)
+    names, skipped = active_mode_controls(arm, names, frame) if current_mode_only else (names, [])
     targets = ordered_bones(arm, names)
     # 모든 입력을 먼저 읽어 잘못된 이름·행렬 때문에 일부만 적용되지 않게 한다.
     matrices = {pb.name: Matrix(records[pb.name]["matrix"]) for pb in targets}

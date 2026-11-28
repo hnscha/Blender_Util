@@ -115,15 +115,30 @@ def cleanup_all():
 
 @persistent
 def _load_post(_unused):
+    cleanup_interaction()
     count = cleanup_all()
     if count:
         print(f"Anim Studio: 임시 항목 {count}개 정리")
 
 
+def cleanup_interaction():
+    from ..ui import picker
+    from ..ops import library_ops
+    picker.cleanup()
+    library_ops.cleanup()
+
+
+@persistent
+def _load_pre(_unused):
+    cleanup_interaction()
+
+
 def register():
+    bpy.app.handlers.load_pre.append(_load_pre)
     bpy.app.handlers.load_post.append(_load_post)
 
 
 def unregister():
+    bpy.app.handlers.load_pre.remove(_load_pre)
     bpy.app.handlers.load_post.remove(_load_post)
     cleanup_all()

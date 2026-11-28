@@ -52,7 +52,8 @@ def mirror_pose(arm, bones, mode='SWAP'):
                            properties={name: numeric_properties(arm.pose.bones[name]) for name in sources})
 
 
-def mirror_matrices(arm, matrices, mode='SWAP', *, properties=None, frame=None, source_frame=None):
+def mirror_matrices(arm, matrices, mode='SWAP', *, properties=None, frame=None, source_frame=None,
+                    current_mode_only=True):
     """저장한 LOCAL basis도 현재 포즈와 같은 레스트 보정식으로 반사한다."""
     if mode not in {'SWAP', 'LEFT_TO_RIGHT', 'RIGHT_TO_LEFT'}:
         raise StudioError("지원하지 않는 미러 모드입니다.")
@@ -63,6 +64,8 @@ def mirror_matrices(arm, matrices, mode='SWAP', *, properties=None, frame=None, 
     source_active, source_skipped = active_mode_controls(arm, sorted(sources),
                                                         frame if source_frame is None else source_frame)
     skipped.extend(entry for entry in source_skipped if entry not in skipped)
+    if not current_mode_only:
+        active, source_active, skipped = sources | {mapping[n] for n in sources}, sources, []
     reflection = Matrix.Diagonal((-1.0, 1.0, 1.0))
     output, custom = {}, {}
     for name in sorted(sources):

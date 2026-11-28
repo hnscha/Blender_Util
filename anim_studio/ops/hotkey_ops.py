@@ -514,6 +514,7 @@ BUTTONS = {
         Button('Free Rotation', 'transform.trackball', 'free_rotation', short='Free'),
     ),
     'SELECT': (
+        Button('Picker', 'anim_studio.picker', 'select_com', short='Picker'),
         Button('Select Opposite', 'pose.select_mirror', 'select_opposite', keymaps=('Pose',), short='Flip'),
         Button('Select COM', 'anim_studio.select_com', 'select_com', keymaps=('Pose', 'Object Mode'), short='COM'),
         Button('Select Next Armature', 'anim_studio.select_next_armature', 'next_armature', short='Next'),
@@ -539,6 +540,9 @@ BUTTONS = {
         Button('Focus Anim Studio', 'anim_studio.focus_panel', 'focus_panel', short='Panel'),
     ),
     'POSE_TOOLS': (
+        Button('Save Pose', 'anim_studio.asset_save', 'pose_library', keymaps=('Pose',), short='Save'),
+        Button('Apply Pose', 'anim_studio.asset_apply', 'pose_library', keymaps=('Pose',), short='Apply'),
+        Button('Blend Pose', 'anim_studio.asset_blend', 'pose_library', keymaps=('Pose',), short='Blend'),
         Button('Copy', 'anim_studio.pose_copy', 'pose_library', keymaps=('Pose',), short='Copy'),
         Button('Paste', 'anim_studio.pose_paste', 'pose_library', keymaps=('Pose',), short='Paste'),
         Button('Paste Opposite', 'anim_studio.pose_paste_opposite', 'select_opposite', keymaps=('Pose',), short='Opp'),

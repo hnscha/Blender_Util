@@ -64,9 +64,9 @@ def writable_channels(arm, names, channels):
             for name in names}
 
 
-def apply_current(arm, pose, channels=fcurve.TRANSFORMS, *, key=True):
+def apply_current(arm, pose, channels=fcurve.TRANSFORMS, *, key=True, current_mode_only=True):
     fcurve.ensure_editable(arm.animation_data.action if arm.animation_data else None)
-    names, skipped = active_mode_controls(arm, list(pose))
+    names, skipped = active_mode_controls(arm, list(pose)) if current_mode_only else (list(pose), [])
     skipped = list(dict.fromkeys([*pose.skipped, *skipped]))
     if not names:
         raise StudioError(mode_skip_message(skipped) or '적용할 본이 없습니다.')
@@ -78,7 +78,7 @@ def apply_current(arm, pose, channels=fcurve.TRANSFORMS, *, key=True):
     custom_keys = {(n, p) for n in names for p in pose.custom_properties.get(n, {})
                    if cb is not None and cb.fcurves.find(property_path(arm.pose.bones[n], p), index=0)}
     with busy():
-        snapshot.apply(arm, pose, writable=writable)
+        snapshot.apply(arm, pose, writable=writable, current_mode_only=current_mode_only)
         if key:
             cb = fcurve.channelbag(arm)
             owners = fcurve._owners(cb)
@@ -172,11 +172,12 @@ def measure(arm, names, frames, space='WORLD'):
             scene.frame_set(original, subframe=subframe)
 
 
-def mirror_saved(arm, pose, mode='SWAP', *, frame=None, source_frame=None):
+def mirror_saved(arm, pose, mode='SWAP', *, frame=None, source_frame=None, current_mode_only=True):
     if pose.space != 'LOCAL':
         raise StudioError('미러에는 로컬 포즈 기록이 필요합니다.')
     return protect_modes(arm, mirror.mirror_matrices(arm, pose, mode, properties=pose.custom_properties,
-                                                    frame=frame, source_frame=source_frame))
+                                                    frame=frame, source_frame=source_frame,
+                                                    current_mode_only=current_mode_only))
 
 
 def blend(a, b, factor):
